@@ -6,9 +6,11 @@
 // nothing when it is not being looked at, and does not depend on git being
 // installed in the agent's image.
 //
-// Nothing in here writes: every command is a read, and none of them takes the
-// index lock, so looking at a diff can never disturb an agent that is halfway
-// through a commit in the same repository.
+// Reading is all that showing a diff does: every command behind one is a read,
+// and none of them takes the index lock, so looking at a diff can never disturb
+// an agent that is halfway through a commit in the same repository. Adding a
+// worktree is the one thing here that writes, and it is confined to
+// worktree.go — asked for outright, never on the way to a view.
 package git
 
 import (

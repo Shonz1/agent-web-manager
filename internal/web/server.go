@@ -84,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /api/sandboxes/{id}/stop", s.handleStopSandbox)
 	mux.HandleFunc("POST /api/sandboxes/{id}/sessions", s.handleStartSession)
+	mux.HandleFunc("POST /api/sandboxes/{id}/worktree", s.handleStartWorktreeSession)
 	mux.HandleFunc("GET /api/sandboxes/{id}/diff", s.handleDiff)
 	mux.HandleFunc("GET /api/sandboxes/{id}/diff/file", s.handleDiffFile)
 

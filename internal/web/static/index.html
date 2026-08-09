@@ -295,6 +295,31 @@
       <small>Passed to the agent after <code>--</code>.</small>
     </label>
 
+    <!-- The same session, on a branch and a checkout of its own. Offered here
+         because here is where the choice has to be made: a sandbox's mounts are
+         fixed when it is created, so a worktree cannot be handed to a session
+         afterwards. -->
+    <label id="s-worktree-line" class="check-line">
+      <input id="s-worktree" type="checkbox">
+      Give this session a git worktree of its own
+    </label>
+
+    <div id="s-worktree-fields" class="check-fields" hidden>
+      <label>
+        Branch
+        <input id="s-branch" type="text" placeholder="feature-x" autocomplete="off" spellcheck="false">
+        <small>Checked out in the worktree, and created from where the workspace stands now if it is new.</small>
+      </label>
+
+      <label>
+        Worktree directory <span class="optional">optional</span>
+        <input id="s-worktree-path" type="text" autocomplete="off" spellcheck="false">
+        <small>Must not exist yet. Defaults to a folder beside the repository, named after it and the branch.</small>
+      </label>
+
+      <p id="s-worktree-note" class="dialog-note"></p>
+    </div>
+
     <p id="agent-error" class="error" hidden></p>
 
     <menu>

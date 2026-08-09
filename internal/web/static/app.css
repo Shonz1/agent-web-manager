@@ -962,6 +962,15 @@ button.link:hover:not(:disabled) { background: none; }
   accent-color: var(--accent);
 }
 
+/* Fields that only exist because a check-line above them is ticked, drawn as
+   hanging off it rather than as more of the form. */
+.check-fields {
+  margin: -4px 0 0 22px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.check-fields .dialog-note { margin-bottom: 4px; }
+
 .error {
   margin: 0 0 12px;
   padding: 8px 10px;
