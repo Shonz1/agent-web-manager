@@ -31,6 +31,9 @@ type startWorktreeRequest struct {
 	// Name is what to call the new sandbox. Empty takes the usual default,
 	// "<agent>-<directory>", which for a worktree names the branch with it.
 	Name string `json:"name"`
+	// NoPlugins starts the new sandbox without the Claude Code plugins the one
+	// it was branched from has.
+	NoPlugins bool `json:"noPlugins"`
 }
 
 // worktreeSessionResponse reports all three things that were made, because the
@@ -107,6 +110,12 @@ func (s *Server) handleStartWorktreeSession(w http.ResponseWriter, r *http.Reque
 		// cannot bind the same host port, and this one is meant to run beside
 		// the sandbox it came from rather than instead of it.
 		ExtraWorkspaces: withRepoMount(sb.ExtraWorkspaces, tree.RepoRoot),
+		// A branch of a sandbox's work should be a branch of its tools too.
+		// Plugins are the one part of a sandbox that a new one does not
+		// inherit on its own, so they are copied across from the sandbox this
+		// worktree was taken from rather than from the manager's own machine.
+		PluginsFrom: sb.Name,
+		NoPlugins:   req.NoPlugins,
 	})
 	if err != nil {
 		// The worktree was made for a sandbox that never came up. Leaving it
