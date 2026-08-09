@@ -1,0 +1,4 @@
+bin/
+dist/
+.omc/
+.DS_Store

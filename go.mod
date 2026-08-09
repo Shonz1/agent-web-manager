@@ -1,0 +1,10 @@
+module github.com/oleksiiipatov/agent-web-manager
+
+go 1.26.5
+
+require (
+	github.com/creack/pty v1.1.24
+	github.com/gorilla/websocket v1.5.3
+)
+
+require github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02

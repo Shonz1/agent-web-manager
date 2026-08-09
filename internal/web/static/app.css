@@ -1,0 +1,894 @@
+:root {
+  --bg: #0e1116;
+  --bg-raised: #161b22;
+  --bg-inset: #0a0d12;
+  --border: #262c36;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --accent: #4493f8;
+  --green: #3fb950;
+  --amber: #d29922;
+  --red: #f85149;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+/* Author `display` rules would otherwise beat the UA stylesheet's
+   [hidden] { display: none } at equal specificity. */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  /* Mobile browser chrome comes and goes; dvh follows it so the terminal is
+     never cut off behind the URL bar. */
+  height: 100dvh;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+
+/* --- sidebar --- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 16px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-head h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
+.health {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: none;
+}
+.health.ok { background: var(--green); }
+.health.bad { background: var(--red); }
+
+.sandbox-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sandbox-item {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sandbox-item:hover { background: #1c2330; }
+
+.sandbox-item.active {
+  background: #1c2330;
+  border-color: var(--accent);
+}
+
+.sandbox-item .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sandbox-item .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.sandbox-item .sub {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sessions hang off their sandbox, indented and hairline-connected so the
+   nesting reads without a disclosure control. */
+.session-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0 19px;
+  padding-left: 9px;
+  border-left: 1px solid var(--border);
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-row:hover { background: #1c2330; color: var(--text); }
+.session-row.active {
+  background: #1c2330;
+  border-color: var(--accent);
+  color: var(--text);
+}
+.session-row .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A session carries two names: the one the manager gave it, and the one the
+   agent gave its own conversation. They stack, so a long generated title
+   cannot squeeze the short stable one out of the row. */
+.session-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-text .name { flex: none; }
+.session-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-dim);
+}
+.dot.running  { background: var(--green); }
+.dot.starting { background: var(--amber); }
+.dot.exited   { background: var(--text-dim); }
+.dot.failed   { background: var(--red); }
+
+/* Sandbox status comes from Docker, so anything other than "running" or a
+   sandbox sbx has lost is just dim. */
+.dot.sandbox-running { background: var(--green); }
+.dot.sandbox-missing { background: var(--red); }
+
+/* What a live session is doing, on top of the colour that says it is alive.
+   The two states worth telling apart at a glance are told apart twice over —
+   by colour and by whether the dot moves — because one of them is the one
+   where the session is waiting for a person and the other is not. */
+.dot.busy { animation: dot-pulse 1.5s ease-in-out infinite; }
+.dot.idle { opacity: .4; }
+.dot.waiting {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgb(210 153 34 / .22);
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .35; transform: scale(.8); }
+}
+
+.sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: center;
+}
+
+.settings-link {
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.settings-link:hover:not(:disabled) { background: #1c2330; color: var(--text); }
+/* Notifications that are on are worth seeing from the sidebar: one that is
+   silently not arriving looks exactly like nothing having happened. */
+.settings-link.on { border-color: #23582f; color: var(--green); }
+
+/* --- settings --- */
+
+.settings-body {
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-sub {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.settings-state {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.settings-state.on { border-color: #23582f; color: var(--green); }
+
+.settings-ok {
+  margin: 0;
+  color: var(--green);
+  font-size: 12.5px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+#tg-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#tg-fields[hidden] { display: none; }
+
+.empty-hint {
+  padding: 24px 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* --- main --- */
+
+.main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+  text-align: center;
+}
+.empty h2 { margin: 0 0 6px; font-size: 16px; color: var(--text); }
+.empty p { margin: 0; }
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+  gap: 8px;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.panel-heading {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+}
+
+.session-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.session-card:hover:not(:disabled) { background: #1c2330; border-color: var(--accent); }
+.session-card .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.session-card .session-text .name { flex: none; }
+.session-card .session-sub { font-size: 11.5px; }
+
+.session-cards .empty-hint { padding: 20px 8px; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.topbar-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar-main h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-actions { display: flex; gap: 6px; }
+
+.badge {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+.badge.running { color: var(--green); border-color: #23582f; }
+.badge.failed  { color: var(--red);   border-color: #5c2320; }
+.badge.subtle  { opacity: .75; }
+.badge.activity.waiting { color: var(--amber); border-color: #5c4416; }
+.badge.activity.idle    { opacity: .6; }
+.badge.sandbox-running { color: var(--green); border-color: #23582f; }
+.badge.sandbox-missing { color: var(--red);   border-color: #5c2320; }
+
+/* A badge that navigates: same chip, but clickable. */
+button.link-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+button.link-badge:hover:not(:disabled) { background: #1c2330; color: var(--text); }
+
+.meta {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the session is doing — the agent's own name for the conversation, or a
+   shell's last command — above the mechanical detail of how it was started. */
+.term-sub {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 4px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  overflow: hidden;
+  /* Vertical drags are the terminal's own scroll gesture (see
+     enableTouchScroll); leave the browser the axes it can still have. */
+  touch-action: pan-x pinch-zoom;
+}
+
+/* --- controls --- */
+
+button {
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #21262d;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  /* No double-tap-to-zoom delay, no grey flash on tap. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+button:hover:not(:disabled) { background: #2b323c; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+button.primary {
+  border-color: #2f6fbb;
+  background: #1f6feb;
+  color: #fff;
+}
+button.primary:hover:not(:disabled) { background: #2d7ff9; }
+
+button.danger { color: var(--red); }
+button.danger:hover:not(:disabled) { background: #3a1d1c; }
+
+button.block { width: 100%; }
+
+/* --- dialog --- */
+
+dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  color: var(--text);
+}
+dialog::backdrop { background: rgba(0, 0, 0, .6); }
+
+dialog h2 { margin: 0 0 14px; font-size: 16px; }
+
+/* Shared by the dialogs and the settings panel, which is the same kind of
+   form in a different container. */
+dialog label,
+.settings-group label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+dialog input,
+dialog select,
+dialog textarea,
+.settings-group input {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+dialog textarea { font-family: var(--mono); resize: vertical; }
+dialog input:focus, dialog select:focus, dialog textarea:focus,
+.settings-group input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.settings-group input:disabled { opacity: .5; }
+
+dialog small,
+.settings-group small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 11.5px;
+}
+.settings-group small a { color: var(--accent); }
+
+dialog .optional,
+.settings-group .optional {
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 11.5px;
+}
+
+.dialog-note {
+  margin: -6px 0 14px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+/* Two mutually exclusive radios drawn as one segmented control. */
+.source-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.source-toggle label {
+  flex: 1;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--text-dim);
+  text-align: center;
+  cursor: pointer;
+}
+.source-toggle label:hover { color: var(--text); }
+.source-toggle label:has(input:checked) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.source-toggle label:has(input:focus-visible) { outline: 2px solid var(--accent); }
+/* The radio itself only carries state; the label is the visible control. */
+.source-toggle input {
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  position: absolute;
+}
+
+dialog details { margin-bottom: 12px; }
+dialog summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+dialog menu {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+/* --- folder picker --- */
+
+/* An input paired with a button on the same row. */
+.with-button {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.with-button input,
+.with-button select { margin-top: 0; min-width: 0; }
+.with-button button { margin-top: 5px; flex: none; }
+
+button.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+}
+button.link:hover:not(:disabled) { background: none; }
+
+#browse-dialog { width: min(560px, calc(100vw - 32px)); }
+
+.browse-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.browse-bar input {
+  margin-top: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.browse-bar button { flex: none; }
+
+.browse-list {
+  height: 44vh;
+  margin: 0 0 10px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  list-style: none;
+  overflow-y: auto;
+}
+
+.browse-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.browse-item:hover:not(:disabled) { background: #1c2330; }
+.browse-item:focus-visible { outline: none; border-color: var(--accent); }
+
+.browse-item .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A folder glyph keeps rows scannable without shipping an icon set. */
+.browse-item .name::before {
+  content: "▸ ";
+  color: var(--text-dim);
+}
+
+.browse-empty {
+  padding: 16px 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* A checkbox and its wording on one line, in a dialog that otherwise stacks
+   labels above their controls. */
+.check-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 12.5px;
+}
+.check-line input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #5c2320;
+  border-radius: 6px;
+  background: #2d1513;
+  color: #ffb3ae;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: .92em;
+}
+
+/* --- narrow screens --- */
+
+/* The sidebar becomes an overlay drawer rather than a stacked row: a terminal
+   is the whole point of the main pane, and it needs the whole viewport. */
+
+.menu-btn { display: none; }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, .55);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .2s ease, visibility .2s ease;
+}
+
+.term-keys {
+  display: none;
+  flex: none;
+  gap: 6px;
+  margin-top: 2px;
+}
+.term-keys button {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  padding: 6px 2px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.term-keys button:active { background: #2b323c; color: var(--text); }
+
+/* Phones get the key bar for their screen size; a touch tablet gets it because
+   its keyboard is just as short of an Esc. */
+@media (max-width: 720px), (hover: none) and (pointer: coarse) {
+  .term-keys { display: flex; }
+}
+
+@media (max-width: 720px) {
+  body { grid-template-columns: 1fr; }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    /* Leaves a strip of scrim wide enough to be an obvious way out. */
+    width: min(320px, 82vw);
+    padding: calc(16px + env(safe-area-inset-top)) 12px
+             calc(16px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
+    box-shadow: 0 0 40px rgba(0, 0, 0, .5);
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+  }
+  body.nav-open .sidebar { transform: none; }
+  body.nav-open .scrim { opacity: 1; visibility: visible; }
+
+  .menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 6px 10px;
+    font-size: 15px;
+    line-height: 1;
+  }
+  .menu-btn.wide { margin-top: 14px; min-width: 160px; }
+
+  .panel, .empty {
+    padding-left: calc(12px + env(safe-area-inset-left));
+    padding-right: calc(12px + env(safe-area-inset-right));
+  }
+  .panel {
+    padding-top: calc(10px + env(safe-area-inset-top));
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+
+  /* Title and status take a row of their own; the actions get the next one and
+     split it, so nothing lands at half a fingertip wide. */
+  .topbar { gap: 8px; }
+  .topbar-main { flex: 1 1 100%; }
+  .topbar-actions { flex-wrap: wrap; gap: 8px; width: 100%; }
+  .topbar-actions button { flex: 1 1 auto; min-height: 40px; }
+  /* Sharing out the leftover width is fine until it hands the widest target on
+     the screen to the one button there is no undo for. */
+  .topbar-actions button.danger { flex: 0 1 auto; }
+
+  .sandbox-item { padding: 12px 10px; }
+  .session-row { padding: 9px 8px; font-size: 13px; }
+  .session-card { padding: 13px 12px; }
+  #new-sandbox { min-height: 42px; }
+
+  .terminal { padding: 6px 2px 6px 6px; }
+
+  /* A sheet off the bottom edge: within thumb reach, and it keeps its footing
+     when the soft keyboard shoves the viewport up. */
+  /* #browse-dialog sets its own width with an id, which outranks a bare
+     `dialog` no matter where it sits. */
+  dialog, #browse-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: 90dvh;
+    margin: auto 0 0;
+    border-radius: 14px 14px 0 0;
+    padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+  }
+  dialog menu { position: sticky; bottom: 0; padding-top: 6px; background: var(--bg-raised); }
+  dialog menu button { flex: 1; min-height: 42px; }
+
+  /* iOS zooms the page in on any field under 16px; every other size here is
+     free to stay small. */
+  dialog input, dialog select, dialog textarea,
+  .settings-group input { font-size: 16px; }
+  /* Its own rule outranks the one above, so it needs saying again here. */
+  .browse-bar input { font-size: 16px; }
+  /* Tapping the terminal focuses xterm's hidden textarea, which inherits the
+     terminal's font size. It sits off-screen at zero size, so a size that only
+     exists to clear the zoom threshold costs nothing. */
+  .xterm .xterm-helper-textarea { font-size: 16px; }
+
+  .with-button button, .browse-bar button { min-width: 44px; min-height: 40px; }
+  .browse-list { height: 40dvh; }
+  .browse-item { padding: 10px 8px; }
+  .source-toggle label { padding: 10px 9px; }
+  .check-line { min-height: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .scrim { transition: none; }
+  /* The busy dot still has to differ from the idle one, which is dimmed. */
+  .dot.busy { animation: none; }
+}

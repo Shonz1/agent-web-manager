@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Web Manager</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#9635;</text></svg>">
+</head>
+<body>
+
+<div id="scrim" class="scrim"></div>
+
+<aside class="sidebar">
+  <header class="sidebar-head">
+    <h1>Sandboxes</h1>
+    <span id="health" class="health" title="sbx status"></span>
+  </header>
+
+  <button id="new-sandbox" class="primary block">+ New sandbox</button>
+
+  <nav id="sandbox-list" class="sandbox-list" aria-label="Sandboxes"></nav>
+
+  <footer class="sidebar-foot">
+    <button id="open-settings" type="button" class="settings-link"></button>
+    <span id="version">agent-web-manager</span>
+  </footer>
+</aside>
+
+<main class="main">
+  <div id="empty" class="empty">
+    <div>
+      <h2>No sandbox selected</h2>
+      <p>Create a sandbox, then start agent or shell sessions inside it.</p>
+      <button type="button" class="menu-btn wide" aria-controls="sandbox-list" aria-expanded="false">
+        ☰ Sandboxes
+      </button>
+    </div>
+  </div>
+
+  <section id="sandbox-panel" class="panel" hidden>
+    <header class="topbar">
+      <div class="topbar-main">
+        <button type="button" class="menu-btn" aria-controls="sandbox-list" aria-expanded="false"
+                aria-label="Show sandboxes">☰</button>
+        <h2 id="sb-name"></h2>
+        <span id="sb-status" class="badge"></span>
+        <span id="sb-agent" class="badge subtle"></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-start-agent" class="primary" title="Attach the sandbox's agent to a new terminal">Start agent</button>
+        <button id="btn-start-shell" title="Open a shell inside the sandbox">Start shell</button>
+        <button id="btn-stop-sandbox" title="End every session and stop the sandbox">Stop</button>
+        <button id="btn-delete-sandbox" class="danger" title="Destroy the sandbox permanently">Delete</button>
+      </div>
+    </header>
+    <p id="sb-meta" class="meta"></p>
+
+    <div class="panel-body">
+      <h3 class="panel-heading">Sessions</h3>
+      <ul id="sb-sessions" class="session-cards" aria-label="Sessions in this sandbox"></ul>
+    </div>
+  </section>
+
+  <section id="settings-panel" class="panel" hidden>
+    <header class="topbar">
+      <div class="topbar-main">
+        <button type="button" class="menu-btn" aria-controls="sandbox-list" aria-expanded="false"
+                aria-label="Show sandboxes">☰</button>
+        <h2>Settings</h2>
+      </div>
+    </header>
+
+    <div class="panel-body settings-body">
+      <section class="settings-group">
+        <h3 class="panel-heading">Notifications</h3>
+        <p class="settings-note">
+          You are told when an agent stops on a question it cannot go past, and
+          when one finishes a stretch of work. Nothing else is announced, and
+          nothing is sent about the session you are already looking at.
+        </p>
+
+        <div class="settings-row">
+          <span class="settings-row-text">
+            <strong>In this browser</strong>
+            <span id="browser-notify-state" class="settings-sub"></span>
+          </span>
+          <button type="button" id="browser-notify-toggle"></button>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3 class="panel-heading">Telegram</h3>
+        <p class="settings-note">
+          Reaches a phone with the tab closed and the laptop shut, which a
+          browser notification cannot — and is the only one of the two that
+          works at all when this manager is opened over plain HTTP on a LAN
+          address.
+        </p>
+
+        <p id="tg-state" class="settings-state"></p>
+
+        <div id="tg-fields">
+          <label>
+            Bot token
+            <input id="tg-token" type="password" autocomplete="off" spellcheck="false"
+                   placeholder="123456789:AAE…">
+            <small>
+              From <a href="https://t.me/botfather" target="_blank" rel="noreferrer noopener">@BotFather</a>.
+              Kept on this machine and never sent back to this page.
+            </small>
+          </label>
+
+          <label>
+            Chat id
+            <input id="tg-chat" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="987654321">
+            <small>
+              Send your bot a message, then read the id back from
+              <code>getUpdates</code> — the README has the one-liner.
+            </small>
+          </label>
+
+          <label>
+            Link back to this manager at <span class="optional">optional</span>
+            <input id="tg-link" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="http://192.168.1.50:7788">
+            <small id="tg-link-hint">
+              Puts an <b>Open session</b> button under each notification. It has
+              to be an address the device reading them can reach — a phone
+              tapping <code>127.0.0.1</code> reaches itself. Leave it empty for
+              no button.
+            </small>
+          </label>
+        </div>
+
+        <p id="tg-error" class="error" hidden></p>
+        <p id="tg-ok" class="settings-ok" hidden></p>
+
+        <menu class="settings-actions">
+          <button type="button" id="tg-save" class="primary">Save and connect</button>
+          <button type="button" id="tg-test">Send a test</button>
+          <button type="button" id="tg-disable" class="danger">Turn off</button>
+        </menu>
+      </section>
+    </div>
+  </section>
+
+  <section id="session-panel" class="panel" hidden>
+    <header class="topbar">
+      <div class="topbar-main">
+        <button type="button" class="menu-btn" aria-controls="sandbox-list" aria-expanded="false"
+                aria-label="Show sandboxes">☰</button>
+        <h2 id="term-name"></h2>
+        <span id="term-status" class="badge"></span>
+        <span id="term-activity" class="badge"></span>
+        <button id="term-sandbox" class="badge link-badge" title="Show this sandbox"></button>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-interrupt" title="Send Ctrl-C">Interrupt</button>
+        <button id="btn-restart" title="Run this session again">Restart</button>
+        <button id="btn-close-session" class="danger" title="End this session; the sandbox keeps running">End session</button>
+      </div>
+    </header>
+    <p id="term-sub" class="term-sub" hidden></p>
+    <p id="term-meta" class="meta"></p>
+    <div id="terminal" class="terminal"></div>
+
+    <!-- Keys a phone's soft keyboard does not offer, but every agent TUI needs. -->
+    <div id="term-keys" class="term-keys" role="group" aria-label="Terminal keys">
+      <button type="button" data-key="esc">esc</button>
+      <button type="button" data-key="tab">tab</button>
+      <button type="button" data-key="ctrl-c">^C</button>
+      <button type="button" data-key="left" aria-label="Left">←</button>
+      <button type="button" data-key="down" aria-label="Down">↓</button>
+      <button type="button" data-key="up" aria-label="Up">↑</button>
+      <button type="button" data-key="right" aria-label="Right">→</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="create-dialog">
+  <form id="create-form" method="dialog">
+    <h2 id="create-title">New sandbox</h2>
+
+    <div class="source-toggle" role="radiogroup" aria-label="Sandbox source">
+      <label><input type="radio" name="source" value="new" checked> Create one</label>
+      <label><input type="radio" name="source" value="existing"> Add an existing one</label>
+    </div>
+
+    <div id="fields-new">
+      <label>
+        Agent
+        <select id="f-agent" required></select>
+        <small>The agent this sandbox is built for. Agent sessions run it; shell sessions do not.</small>
+      </label>
+
+      <label>
+        Workspace directory (on this host)
+        <span class="with-button">
+          <input id="f-workspace" type="text" placeholder="/Users/you/projects/my-app" required
+                 autocomplete="off" spellcheck="false">
+          <button type="button" id="f-workspace-browse" title="Pick a folder">Browse…</button>
+        </span>
+        <small>Bind-mounted into the sandbox as the working directory.</small>
+      </label>
+
+      <label>
+        Sandbox name <span class="optional">optional</span>
+        <input id="f-name" type="text" placeholder="claude-my-app" autocomplete="off" spellcheck="false"
+               pattern="[A-Za-z0-9.+\-]+">
+        <small>Letters, numbers, and <code>. + -</code>. Defaults to <code>&lt;agent&gt;-&lt;dir&gt;</code>.</small>
+      </label>
+    </div>
+
+    <div id="fields-existing" hidden>
+      <label>
+        Sandbox
+        <span class="with-button">
+          <select id="f-sandbox"></select>
+          <button type="button" id="f-sandbox-refresh" title="Reload the sandbox list">↻</button>
+        </span>
+        <small id="f-sandbox-hint">
+          Takes over a sandbox <code>sbx</code> already knows about, including ones created
+          outside this manager. Its agent and workspaces come from the sandbox itself.
+        </small>
+      </label>
+    </div>
+
+    <details id="create-advanced">
+      <summary>Advanced</summary>
+
+      <label>
+        Extra workspaces <span class="optional">one per line</span>
+        <textarea id="f-extra" rows="2" placeholder="/Users/you/docs:ro" spellcheck="false"></textarea>
+        <small>
+          Append <code>:ro</code> to mount read-only.
+          <button type="button" id="f-extra-browse" class="link">Add folder…</button>
+        </small>
+      </label>
+
+      <label>
+        Published ports <span class="optional">one per line</span>
+        <textarea id="f-publish" rows="2" placeholder="3000:3000" spellcheck="false"></textarea>
+      </label>
+    </details>
+
+    <p id="create-error" class="error" hidden></p>
+
+    <menu>
+      <button type="button" id="create-cancel">Cancel</button>
+      <button type="button" id="create-submit" class="primary">Create sandbox</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="agent-dialog">
+  <form id="agent-form" method="dialog">
+    <h2>Start agent session</h2>
+    <p id="agent-note" class="dialog-note"></p>
+
+    <label>
+      Agent arguments <span class="optional">space separated</span>
+      <input id="s-args" type="text" placeholder="--continue" autocomplete="off" spellcheck="false">
+      <small>Passed to the agent after <code>--</code>.</small>
+    </label>
+
+    <p id="agent-error" class="error" hidden></p>
+
+    <menu>
+      <button type="button" id="agent-cancel">Cancel</button>
+      <button type="button" id="agent-submit" class="primary">Start</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="browse-dialog" aria-label="Choose a folder">
+  <h2>Choose a folder</h2>
+
+  <div class="browse-bar">
+    <button type="button" id="browse-up" title="Parent folder">↑</button>
+    <button type="button" id="browse-home" title="Home folder">Home</button>
+    <input id="browse-path" type="text" autocomplete="off" spellcheck="false"
+           aria-label="Current folder path">
+  </div>
+
+  <ul id="browse-list" class="browse-list" aria-label="Folders"></ul>
+
+  <p id="browse-error" class="error" hidden></p>
+
+  <label class="check-line">
+    <input id="browse-show-hidden" type="checkbox">
+    Show hidden folders
+  </label>
+
+  <menu>
+    <button type="button" id="browse-cancel">Cancel</button>
+    <button type="button" id="browse-select" class="primary">Use this folder</button>
+  </menu>
+</dialog>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
