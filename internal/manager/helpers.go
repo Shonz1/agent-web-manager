@@ -25,12 +25,14 @@ func newID() string {
 // reports workspaces in mount order, so the first one is the agent's working
 // directory and the rest are extra mounts.
 func sandboxFromSbx(box sbx.Sandbox) *Sandbox {
+	now := time.Now()
 	sb := &Sandbox{
-		ID:        newID(),
-		Name:      box.Name,
-		Agent:     box.Agent,
-		Adopted:   true,
-		CreatedAt: time.Now(),
+		ID:             newID(),
+		Name:           box.Name,
+		Agent:          box.Agent,
+		Adopted:        true,
+		CreatedAt:      now,
+		LastActivityAt: now,
 	}
 	if len(box.Workspaces) > 0 {
 		sb.Workspace = box.Workspaces[0]

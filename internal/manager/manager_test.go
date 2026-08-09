@@ -1,10 +1,13 @@
 package manager
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
 )
@@ -206,5 +209,112 @@ func TestSandboxViewHasEmptySessionList(t *testing.T) {
 	}
 	if v.Status != StatusMissing {
 		t.Errorf("status = %q, want %q", v.Status, StatusMissing)
+	}
+}
+
+// The list is ordered by what was last used, not by what was made first — a
+// sandbox someone touched a minute ago belongs above one created an hour ago
+// but left idle since.
+func TestListSandboxesOrderedByLastActivity(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(sbx.New(""), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	old := &Sandbox{ID: "old", Name: "old", Agent: "shell", CreatedAt: now.Add(-time.Hour), LastActivityAt: now.Add(-time.Hour)}
+	recent := &Sandbox{ID: "recent", Name: "recent", Agent: "shell", CreatedAt: now.Add(-time.Minute), LastActivityAt: now}
+	for _, sb := range []*Sandbox{old, recent} {
+		m.sandboxes[sb.ID] = sb
+		m.byName[sb.Name] = sb.ID
+	}
+
+	out := m.ListSandboxes(context.Background())
+	if len(out) != 2 || out[0].ID != "recent" || out[1].ID != "old" {
+		t.Fatalf("got order %v, want [recent old]", []string{out[0].ID, out[1].ID})
+	}
+}
+
+// LastActivityAt has to survive a restart, or the order it produces would
+// reset every time the manager does.
+func TestLastActivityAtRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(sbx.New(""), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	activity := time.Now().Add(-30 * time.Minute).Truncate(time.Second)
+	sb := &Sandbox{ID: "id1", Name: "box", Agent: "shell", CreatedAt: activity, LastActivityAt: activity}
+	m.sandboxes[sb.ID] = sb
+	m.byName[sb.Name] = sb.ID
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := New(sbx.New(""), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.GetSandbox("id1")
+	if err != nil {
+		t.Fatalf("GetSandbox: %v", err)
+	}
+	if !got.LastActivityAt.Equal(activity) {
+		t.Errorf("LastActivityAt = %v, want %v", got.LastActivityAt, activity)
+	}
+}
+
+// A record written before LastActivityAt existed has no better answer than
+// when the sandbox was created — it must not sort as though it had never
+// been used at all.
+func TestLoadBackfillsMissingLastActivityAt(t *testing.T) {
+	dir := t.TempDir()
+	createdAt := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	legacy := fmt.Sprintf(`[{"id":"id1","name":"box","agent":"shell","createdAt":%q}]`, createdAt.Format(time.RFC3339))
+	if err := os.WriteFile(filepath.Join(dir, "sandboxes.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := New(sbx.New(""), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.GetSandbox("id1")
+	if err != nil {
+		t.Fatalf("GetSandbox: %v", err)
+	}
+	if !got.LastActivityAt.Equal(createdAt) {
+		t.Errorf("LastActivityAt = %v, want backfilled %v", got.LastActivityAt, createdAt)
+	}
+}
+
+// touchSandboxActivity must be safe to call from many sessions' watchers at
+// once, and a value it sets must eventually make it to disk.
+func TestTouchSandboxActivityPersists(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(sbx.New(""), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := &Sandbox{ID: "id1", Name: "box", Agent: "shell", CreatedAt: time.Now()}
+	m.sandboxes[sb.ID] = sb
+	m.byName[sb.Name] = sb.ID
+
+	before := time.Now()
+	m.touchSandboxActivity(sb.ID)
+	m.flushActivity()
+
+	reloaded, err := New(sbx.New(""), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.GetSandbox("id1")
+	if err != nil {
+		t.Fatalf("GetSandbox: %v", err)
+	}
+	if got.LastActivityAt.Before(before) {
+		t.Errorf("LastActivityAt = %v, want at or after %v", got.LastActivityAt, before)
 	}
 }
