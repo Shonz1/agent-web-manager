@@ -20,8 +20,8 @@ sandbox's agent or to a shell — and a sandbox can host several at a time.
 
 - Go 1.24+ to build (developed against 1.26)
 - Docker and the `sbx` CLI on `PATH` (`sbx version` should work)
-- `git` on `PATH`, for the diff a session shows of its workspace; everything
-  else works without it
+- `git` on `PATH`, for the diff a session shows of its workspace and for the
+  worktree one can be started in; everything else works without it
 
 ## Build and run
 
@@ -97,6 +97,37 @@ Select the sandbox and start as many terminals as you want:
 Neither is limited. Anything a session draws — full TUIs included — renders in
 the terminal. Sessions appear nested under their sandbox in the sidebar; click
 one to attach.
+
+### A worktree of its own
+
+**Start agent** offers to give the session a git worktree: tick the box, name a
+branch, and the agent starts on a branch and a checkout that nothing else is
+using. It is offered here because here is where the choice has to be made — a
+sandbox's mounts are fixed by `sbx create`, so a worktree cannot be handed to a
+session that is already running.
+
+Ticking it does three things, and reports all three:
+
+1. `git worktree add` against the sandbox's workspace. The worktree goes beside
+   the repository, in `<repo>-<branch>`, unless you name a directory yourself;
+   it has to be one that does not exist yet. A branch that is already there is
+   checked out as it stands, and a new one starts from where the workspace is
+   now.
+2. A sandbox of its own, on the same agent, mounted on the worktree — plus the
+   repository the worktree came from. That second mount is not optional: a
+   worktree's `.git` is a file pointing into the main repository, and without
+   the other end of it the agent has no git at all. Published ports are not
+   carried over, because two containers cannot bind the same host port.
+3. The session, started in that sandbox. The UI opens it, and the new sandbox
+   appears in the sidebar beside the one it was branched from.
+
+Both sandboxes then stand on their own: two agents, two branches, two diffs to
+read, and neither able to overwrite the other's files. Deleting the worktree's
+sandbox destroys the container and leaves the checkout — `git worktree remove`
+is how that goes, and it is left to you, because it is the work that was done in
+it. The one time this manager removes a worktree itself is when the sandbox it
+was made for could not be created, since a directory left behind would only make
+the next attempt at the same branch fail.
 
 ### Session names
 
@@ -470,6 +501,7 @@ reaches it with the tab closed.
 | `POST` | `/api/sandboxes/{id}/stop` | End its sessions and stop it |
 | `DELETE` | `/api/sandboxes/{id}` | Destroy it permanently |
 | `POST` | `/api/sandboxes/{id}/sessions` | Start a session inside it |
+| `POST` | `/api/sandboxes/{id}/worktree` | Add a worktree of its workspace, mount a sandbox on it, and start a session in there |
 | `GET` | `/api/sandboxes/{id}/diff` | Changed files in its workspace; `?base=head` (default) or `branch` |
 | `GET` | `/api/sandboxes/{id}/diff/file` | One file's diff, as hunks of numbered lines; `?path=` and, for a rename, `&old=` |
 | `GET` | `/api/sessions/{sid}` | One session |
@@ -497,6 +529,17 @@ call for a second agent:
 curl -X POST localhost:7788/api/sandboxes/{id}/sessions \
   -H 'Content-Type: application/json' \
   -d '{"kind":"agent","agentArgs":["--continue"]}'
+```
+
+Start one on a branch and a checkout of its own instead. The answer carries all
+three things that were made — the `worktree`, the `sandbox` it is mounted in, and
+the `session` running there — and the session half of the request is the same one
+the call above takes:
+
+```bash
+curl -X POST localhost:7788/api/sandboxes/{id}/worktree \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"agent","branch":"feature-x"}'
 ```
 
 Open a shell alongside them. Reads of a shell session carry its
@@ -571,6 +614,12 @@ are required to be relative and to stay inside the repository: one of the
 commands they end up at is `git diff --no-index`, which would otherwise read
 any file on the disk it was pointed at.
 
+Adding a worktree checks the origin as well. It is the one call that writes to
+the host filesystem, and the branch it is given reaches a command line and
+becomes part of a directory name, so it is held to what git itself would accept
+before git is started — a name beginning with a dash, or carrying anything a ref
+cannot hold, is refused rather than passed on.
+
 That origin check is *not* on the rest of the API. Anyone who can reach this
 manager can already start an agent with full access to your source, so the
 loopback bind is what is protecting you, not the endpoints — which is the same
@@ -581,7 +630,7 @@ reason not to expose it on a public interface.
 ```
 main.go                     flags, lifecycle, graceful shutdown
 internal/sbx/               sbx CLI wrapper and argv construction
-internal/git/               reads a workspace's changed files and their diffs
+internal/git/               reads a workspace's changed files and their diffs, and adds the worktree a session can be given
 internal/manager/           sandbox registry and persistence, session PTY lifecycle, scrollback, what a session is doing, which moments are worth notifying about
 internal/notify/            Telegram bot, its settings and persistence, and the relay
 internal/web/               HTTP API, WebSocket attach, event stream, embedded UI

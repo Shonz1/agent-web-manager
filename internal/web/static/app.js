@@ -1140,6 +1140,7 @@ $('btn-start-agent').addEventListener('click', () => {
   $('agent-error').hidden = true;
   $('agent-note').textContent =
     `Runs ${b.agent || 'the agent'} in ${b.name}, on ${b.workspace || 'the sandbox workspace'}.`;
+  resetWorktree(b);
   agentDialog.showModal();
   $('s-args').focus();
 });
@@ -1154,25 +1155,90 @@ $('agent-form').addEventListener('keydown', (ev) => {
   }
 });
 
+/* A worktree is offered with the session rather than after it: a sandbox's
+   mounts are fixed when it is created, so the session that gets one runs in a
+   sandbox of its own, mounted on the worktree with the repository beside it. */
+
+$('s-worktree').addEventListener('change', () => {
+  applyWorktree();
+  if ($('s-worktree').checked) $('s-branch').focus();
+});
+
+$('s-branch').addEventListener('input', showDefaultWorktreePath);
+
+function wantsWorktree() {
+  return $('s-worktree').checked && !$('s-worktree-line').hidden;
+}
+
+function resetWorktree(b) {
+  $('s-worktree').checked = false;
+  $('s-branch').value = '';
+  $('s-worktree-path').value = '';
+  // A sandbox mounted without a workspace has no repository to branch from,
+  // and nothing to say about why the offer is missing that its own metadata
+  // does not say already.
+  $('s-worktree-line').hidden = !b.workspace;
+  $('s-worktree-note').textContent = b.workspace
+    ? `Starts the session in a new sandbox on the worktree, with ${b.workspace} mounted beside it so git keeps working inside.`
+    : '';
+  applyWorktree();
+}
+
+function applyWorktree() {
+  $('s-worktree-fields').hidden = !wantsWorktree();
+  showDefaultWorktreePath();
+}
+
+// The placeholder previews where the worktree would go. It is only a preview:
+// the server works the path out from the repository itself, which is what
+// decides — and which is not the workspace when the workspace is a directory
+// inside it.
+function showDefaultWorktreePath() {
+  const b = selectedSandbox();
+  const branch = $('s-branch').value.trim();
+  $('s-worktree-path').placeholder =
+    b && b.workspace && branch ? defaultWorktreePath(b.workspace, branch) : '';
+}
+
+// Mirrors git.DefaultWorktreePath: beside the repository, named after it and
+// the branch, with anything a directory name cannot hold replaced.
+function defaultWorktreePath(repo, branch) {
+  const root = repo.replace(/\/+$/, '');
+  const slug = branch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '') || 'worktree';
+  return `${root}-${slug}`;
+}
+
 async function submitAgent() {
   const b = selectedSandbox();
   if (!b) return;
 
   const raw = $('s-args').value.trim();
+  const worktree = wantsWorktree();
   const term = ensureTerm();
   const btn = $('agent-submit');
   btn.disabled = true;
   try {
-    const created = await api('POST', `/api/sandboxes/${b.id}/sessions`, {
+    const body = {
       kind: 'agent',
       agentArgs: raw ? raw.split(/\s+/) : [],
       cols: term.cols,
       rows: term.rows,
-    });
+    };
+    let session;
+    if (worktree) {
+      body.branch = $('s-branch').value.trim();
+      body.path = $('s-worktree-path').value.trim();
+      // The answer carries the sandbox that was made for the worktree as well
+      // as the session started in it; the session is what to open.
+      ({ session } = await api('POST', `/api/sandboxes/${b.id}/worktree`, body));
+    } else {
+      session = await api('POST', `/api/sandboxes/${b.id}/sessions`, body);
+    }
     agentDialog.close();
     $('s-args').value = '';
+    resetWorktree(b);
     await refresh();
-    selectSession(created.id);
+    selectSession(session.id);
   } catch (err) {
     const box = $('agent-error');
     box.textContent = err.message;
