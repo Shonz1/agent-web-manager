@@ -146,7 +146,11 @@ type SessionView struct {
 	LastCommand string    `json:"lastCommand,omitempty"`
 	AgentArgs   []string  `json:"agentArgs,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
-	Status      Status    `json:"status"`
+	// LastActivityAt is the last time this session drew something of its own,
+	// as opposed to the echo of a keystroke or a repaint after a resize. It is
+	// what orders a sandbox's sessions most-recently-active first.
+	LastActivityAt time.Time `json:"lastActivityAt"`
+	Status         Status    `json:"status"`
 	// Activity is what a live session looks like it is doing. It is absent for
 	// one that is not running: a process that has exited is not idle, it is
 	// gone, and its status says so.
@@ -161,20 +165,21 @@ func (s *Session) View() SessionView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v := SessionView{
-		ID:          s.ID,
-		SandboxID:   s.SandboxID,
-		SandboxName: s.SandboxName,
-		Kind:        s.Kind,
-		Title:       s.Title,
-		AITitle:     s.aiTitle,
-		LastCommand: s.lastCommand,
-		AgentArgs:   s.AgentArgs,
-		CreatedAt:   s.CreatedAt,
-		Status:      s.status,
-		Activity:    s.activity,
-		ExitCode:    s.exitCode,
-		Error:       s.lastErr,
-		Clients:     len(s.subs),
+		ID:             s.ID,
+		SandboxID:      s.SandboxID,
+		SandboxName:    s.SandboxName,
+		Kind:           s.Kind,
+		Title:          s.Title,
+		AITitle:        s.aiTitle,
+		LastCommand:    s.lastCommand,
+		AgentArgs:      s.AgentArgs,
+		CreatedAt:      s.CreatedAt,
+		LastActivityAt: s.lastOutput,
+		Status:         s.status,
+		Activity:       s.activity,
+		ExitCode:       s.exitCode,
+		Error:          s.lastErr,
+		Clients:        len(s.subs),
 	}
 	if !s.startedAt.IsZero() {
 		t := s.startedAt

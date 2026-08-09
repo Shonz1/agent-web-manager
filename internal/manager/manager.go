@@ -55,7 +55,20 @@ type Manager struct {
 	evMu      sync.Mutex
 	eventSubs map[int]chan Event
 	nextEvent int
+
+	// A session's activity can flip several times a second, and touching a
+	// sandbox's LastActivityAt is cheap, but writing it to disk is not — so
+	// only the in-memory value is updated on every touch, and this throttles
+	// how often that gets persisted. actMu guards the three fields below it.
+	actMu       sync.Mutex
+	actDirty    bool
+	actLastSave time.Time
 }
+
+// activityFlushInterval bounds how often an activity touch is allowed to
+// write sandboxes.json. The ordering it produces only has to survive a
+// restart, not capture every flicker along the way.
+const activityFlushInterval = 3 * time.Second
 
 // New loads any previously persisted sandboxes from stateDir.
 func New(client *sbx.Client, stateDir string) (*Manager, error) {
@@ -137,6 +150,7 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		return nil, err
 	}
 
+	now := time.Now()
 	sb := &Sandbox{
 		ID:              newID(),
 		Name:            req.Name,
@@ -144,7 +158,8 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		Workspace:       ws,
 		ExtraWorkspaces: extras,
 		Publish:         req.Publish,
-		CreatedAt:       time.Now(),
+		CreatedAt:       now,
+		LastActivityAt:  now,
 	}
 
 	m.mu.Lock()
@@ -212,8 +227,8 @@ func (m *Manager) GetSandbox(id string) (*Sandbox, error) {
 	return sb, nil
 }
 
-// ListSandboxes returns every sandbox, newest first, with its live status and
-// its sessions.
+// ListSandboxes returns every sandbox, most recently active first, with its
+// live status and its sessions.
 func (m *Manager) ListSandboxes(ctx context.Context) []SandboxView {
 	status := m.sandboxStatuses(ctx)
 
@@ -224,7 +239,7 @@ func (m *Manager) ListSandboxes(ctx context.Context) []SandboxView {
 	for _, sb := range m.sandboxes {
 		out = append(out, m.viewLocked(sb, status))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool { return out[i].LastActivityAt.After(out[j].LastActivityAt) })
 	return out
 }
 
@@ -253,7 +268,7 @@ func (m *Manager) viewLocked(sb *Sandbox, status map[string]string) SandboxView 
 		}
 	}
 	sort.Slice(v.Sessions, func(i, j int) bool {
-		return v.Sessions[i].CreatedAt.Before(v.Sessions[j].CreatedAt)
+		return v.Sessions[i].LastActivityAt.After(v.Sessions[j].LastActivityAt)
 	})
 	return v
 }
@@ -405,7 +420,13 @@ func (m *Manager) StartSession(ctx context.Context, sandboxID string, req StartS
 	s := newSession(newID(), sb.ID, sb.Name, req.Kind, req.AgentArgs, title)
 	// Each session gets a notifier of its own: the dwell it applies is a
 	// judgement about that session's own run of work.
-	s.onActivity = newSessionNotifier(m.emit, defaultDwell).activityChanged
+	notifier := newSessionNotifier(m.emit, defaultDwell)
+	s.onActivity = func(sess *Session, prev, next Activity) {
+		notifier.activityChanged(sess, prev, next)
+		// A sandbox's place in the list is when it was last used, not just when
+		// it was made — this is what keeps it current across a restart.
+		m.touchSandboxActivity(sb.ID)
+	}
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
 
@@ -568,9 +589,63 @@ func (m *Manager) dropSession(id string) {
 	delete(m.sessions, id)
 }
 
+// touchSandboxActivity records that a session in sandboxID just did
+// something. The in-memory record is updated immediately; the write to disk
+// is throttled by scheduleActivitySave.
+func (m *Manager) touchSandboxActivity(sandboxID string) {
+	m.mu.Lock()
+	sb, ok := m.sandboxes[sandboxID]
+	if ok {
+		sb.LastActivityAt = time.Now()
+	}
+	m.mu.Unlock()
+	if ok {
+		m.scheduleActivitySave()
+	}
+}
+
+// scheduleActivitySave persists sandbox state at most once per
+// activityFlushInterval. A touch that arrives too soon after the last write
+// just marks the state dirty, and it is the next touch — whenever it comes —
+// that flushes it. There is deliberately no timer to do that on its own: a
+// background goroutine still writing after the process has been told to stop
+// is worse than losing a few seconds of ordering, which is all that is ever
+// at stake here. Shutdown flushes whatever a timer would otherwise have
+// caught.
+func (m *Manager) scheduleActivitySave() {
+	m.actMu.Lock()
+	defer m.actMu.Unlock()
+	if time.Since(m.actLastSave) < activityFlushInterval {
+		m.actDirty = true
+		return
+	}
+	m.actDirty = false
+	m.actLastSave = time.Now()
+	_ = m.save()
+}
+
+// flushActivity writes out an activity update that scheduleActivitySave held
+// back. Used at shutdown, where there may be no further touch to trigger it.
+func (m *Manager) flushActivity() {
+	m.actMu.Lock()
+	m.actDirty = false
+	m.actLastSave = time.Now()
+	m.actMu.Unlock()
+	_ = m.save()
+}
+
 // Shutdown terminates every session. Sandboxes are left running, so they and
 // their state are still there on the next start.
 func (m *Manager) Shutdown() {
+	// Whatever the last few seconds of activity left dirty must not be lost:
+	// there will be no later touch to flush it.
+	m.actMu.Lock()
+	dirty := m.actDirty
+	m.actMu.Unlock()
+	if dirty {
+		m.flushActivity()
+	}
+
 	m.mu.RLock()
 	all := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
@@ -647,6 +722,11 @@ func (m *Manager) load() error {
 	}
 	for i := range all {
 		sb := all[i]
+		// A record written before LastActivityAt existed, or migrated from the
+		// legacy sessions.json, has no better answer than when it was created.
+		if sb.LastActivityAt.IsZero() {
+			sb.LastActivityAt = sb.CreatedAt
+		}
 		m.sandboxes[sb.ID] = &sb
 		m.byName[sb.Name] = sb.ID
 	}
