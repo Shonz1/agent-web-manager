@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oleksiiipatov/agent-web-manager/internal/git"
 	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
 	"github.com/oleksiiipatov/agent-web-manager/internal/notify"
 	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
@@ -29,6 +30,7 @@ type Server struct {
 	mgr      *manager.Manager
 	client   *sbx.Client
 	notifier *notify.Service
+	git      *git.Client
 	static   fs.FS
 
 	// shutdown is closed when the process is going away, to end the streams
@@ -40,11 +42,12 @@ type Server struct {
 	shutdown  chan struct{}
 }
 
-func NewServer(mgr *manager.Manager, client *sbx.Client, notifier *notify.Service, static fs.FS) *Server {
+func NewServer(mgr *manager.Manager, client *sbx.Client, notifier *notify.Service, gitClient *git.Client, static fs.FS) *Server {
 	return &Server{
 		mgr:      mgr,
 		client:   client,
 		notifier: notifier,
+		git:      gitClient,
 		static:   static,
 		shutdown: make(chan struct{}),
 	}
@@ -81,6 +84,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /api/sandboxes/{id}/stop", s.handleStopSandbox)
 	mux.HandleFunc("POST /api/sandboxes/{id}/sessions", s.handleStartSession)
+	mux.HandleFunc("GET /api/sandboxes/{id}/diff", s.handleDiff)
+	mux.HandleFunc("GET /api/sandboxes/{id}/diff/file", s.handleDiffFile)
 
 	mux.HandleFunc("GET /api/sessions/{sid}", s.handleGetSession)
 	mux.HandleFunc("DELETE /api/sessions/{sid}", s.handleCloseSession)

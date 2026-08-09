@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oleksiiipatov/agent-web-manager/internal/git"
 	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
 	"github.com/oleksiiipatov/agent-web-manager/internal/notify"
 	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
@@ -29,7 +30,7 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewServer(mgr, sbx.New("sbx"), notifier, StaticFS())
+	return NewServer(mgr, sbx.New("sbx"), notifier, git.New(""), StaticFS())
 }
 
 func TestTelegramSettingsStartEmpty(t *testing.T) {
@@ -133,7 +134,7 @@ func TestSettingsAreReadOnlyWhenTheEnvironmentOwnsThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(mgr, sbx.New("sbx"), notifier, StaticFS())
+	srv := NewServer(mgr, sbx.New("sbx"), notifier, git.New(""), StaticFS())
 
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/settings/telegram", nil))

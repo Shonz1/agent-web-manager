@@ -20,6 +20,8 @@ sandbox's agent or to a shell — and a sandbox can host several at a time.
 
 - Go 1.24+ to build (developed against 1.26)
 - Docker and the `sbx` CLI on `PATH` (`sbx version` should work)
+- `git` on `PATH`, for the diff a session shows of its workspace; everything
+  else works without it
 
 ## Build and run
 
@@ -43,6 +45,7 @@ Then open <http://127.0.0.1:7788>.
 | --- | --- | --- |
 | `-addr` | `127.0.0.1:7788` | Listen address |
 | `-sbx` | `sbx` | Path to the `sbx` binary |
+| `-git` | `git` | Path to the `git` binary, used to read a workspace's changes |
 | `-state-dir` | `~/Library/Application Support/agent-web-manager` (macOS) | Where sandbox records are persisted |
 | `-version` | | Print version and exit |
 
@@ -364,6 +367,47 @@ Sends that fail are logged and dropped rather than retried. These describe a
 state that is still moving: an event held in a queue for a minute is about a
 session that has moved on, and there will be another along shortly.
 
+### What it has actually done
+
+A session has a second view behind the **Changes** tab: the git diff of the
+sandbox's workspace, beside the terminal the agent is talking in. What an agent
+says it did and what it wrote to the files are not the same claim, and this is
+the one that can be checked.
+
+The tab counts the changed files, so a glance at it says whether there is
+anything to review without opening it. Picking a file shows its diff, with the
+line numbers held against the left edge as long lines scroll under them.
+Copying out of the diff gives the source: the `+` and `−` are drawn rather than
+written, and the line numbers are not selectable.
+
+Two things are being compared, and the selector picks which:
+
+- **Uncommitted** — everything not committed yet, staged or not, including
+  files the agent has created and git has never heard of. This is the usual
+  case: work in progress.
+- **Whole branch** — everything this branch has changed since it left the
+  default branch, commits included. This is what to use once the agent has
+  started committing, because uncommitted work alone then shows almost nothing.
+  On the default branch itself there is no such stretch, and it falls back to
+  uncommitted work and says so.
+
+The workspace is bind-mounted from the host, so the files the agent is editing
+inside the sandbox are the ones on the host, and the manager reads them there
+with the `git` on your `PATH` (`-git` points it elsewhere). That means a diff
+is still readable after the sandbox has been stopped, costs nothing while the
+tab is closed, and does not care whether the agent's image has git in it. The
+list re-reads itself every five seconds while you are looking at it, and leaves
+the pane alone when nothing has changed, so reading a long diff is not
+interrupted by the agent saving a file.
+
+Nothing here writes. Every command is a read, and `GIT_OPTIONAL_LOCKS=0` keeps
+even the ones that would ordinarily refresh the index from taking its lock —
+looking at a diff cannot disturb an agent that is halfway through a commit in
+the same repository.
+
+A workspace that is not a git checkout, or a sandbox mounted without one, says
+so rather than reporting an error.
+
 ### 3. Lifecycle
 
 - **Interrupt** sends Ctrl-C to the session.
@@ -426,6 +470,8 @@ reaches it with the tab closed.
 | `POST` | `/api/sandboxes/{id}/stop` | End its sessions and stop it |
 | `DELETE` | `/api/sandboxes/{id}` | Destroy it permanently |
 | `POST` | `/api/sandboxes/{id}/sessions` | Start a session inside it |
+| `GET` | `/api/sandboxes/{id}/diff` | Changed files in its workspace; `?base=head` (default) or `branch` |
+| `GET` | `/api/sandboxes/{id}/diff/file` | One file's diff, as hunks of numbered lines; `?path=` and, for a rename, `&old=` |
 | `GET` | `/api/sessions/{sid}` | One session |
 | `POST` | `/api/sessions/{sid}/interrupt` | Send Ctrl-C |
 | `POST` | `/api/sessions/{sid}/restart` | Run it again |
@@ -461,6 +507,19 @@ curl -X POST localhost:7788/api/sandboxes/{id}/sessions \
   -H 'Content-Type: application/json' \
   -d '{"kind":"shell"}'
 ```
+
+Review what an agent has done to the workspace without attaching to it. The
+first call lists the changed files with their line counts; the second returns
+one file's diff already parsed, so nothing reading this has to understand git's
+output:
+
+```bash
+curl 'localhost:7788/api/sandboxes/{id}/diff?base=branch'
+curl 'localhost:7788/api/sandboxes/{id}/diff/file?path=internal/server/handler.go'
+```
+
+Both check the request origin, since between them they return the contents of
+your source.
 
 The attach socket carries raw PTY bytes as binary frames and JSON status as
 text frames. The browser sends `{"type":"input","data":"…"}` and
@@ -505,6 +564,13 @@ puts the request URL into every transport error it returns. The settings
 endpoints that write it also check the request origin, so a page on another
 site cannot point your notifications at a chat of its own.
 
+The folder picker and the workspace diff check it too. Between them they return
+directory listings and the contents of your source, which is not something
+another site should be able to ask this manager for. Paths reaching the diff
+are required to be relative and to stay inside the repository: one of the
+commands they end up at is `git diff --no-index`, which would otherwise read
+any file on the disk it was pointed at.
+
 That origin check is *not* on the rest of the API. Anyone who can reach this
 manager can already start an agent with full access to your source, so the
 loopback bind is what is protecting you, not the endpoints — which is the same
@@ -515,6 +581,7 @@ reason not to expose it on a public interface.
 ```
 main.go                     flags, lifecycle, graceful shutdown
 internal/sbx/               sbx CLI wrapper and argv construction
+internal/git/               reads a workspace's changed files and their diffs
 internal/manager/           sandbox registry and persistence, session PTY lifecycle, scrollback, what a session is doing, which moments are worth notifying about
 internal/notify/            Telegram bot, its settings and persistence, and the relay
 internal/web/               HTTP API, WebSocket attach, event stream, embedded UI
