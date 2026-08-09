@@ -165,6 +165,17 @@
     </header>
     <p id="term-sub" class="term-sub" hidden></p>
     <p id="term-meta" class="meta"></p>
+
+    <!-- What the agent is saying, and what it has actually done to the files.
+         The terminal keeps running behind the diff; switching does not detach
+         it or lose a line of its scrollback. -->
+    <div class="view-tabs" role="tablist" aria-label="Session view">
+      <button type="button" id="tab-terminal" class="view-tab active" role="tab"
+              aria-selected="true" aria-controls="terminal">Terminal</button>
+      <button type="button" id="tab-diff" class="view-tab" role="tab"
+              aria-selected="false" aria-controls="diff-pane">Changes<span id="diff-count" class="count" hidden></span></button>
+    </div>
+
     <div id="terminal" class="terminal"></div>
 
     <!-- Keys a phone's soft keyboard does not offer, but every agent TUI needs. -->
@@ -176,6 +187,24 @@
       <button type="button" data-key="down" aria-label="Down">↓</button>
       <button type="button" data-key="up" aria-label="Up">↑</button>
       <button type="button" data-key="right" aria-label="Right">→</button>
+    </div>
+
+    <div id="diff-pane" class="diff-pane" hidden>
+      <div class="diff-bar">
+        <select id="diff-base" aria-label="What to compare the workspace against">
+          <option value="head">Uncommitted</option>
+          <option value="branch">Whole branch</option>
+        </select>
+        <span id="diff-where" class="meta"></span>
+        <button type="button" id="diff-refresh" title="Read the workspace again">↻</button>
+      </div>
+
+      <p id="diff-error" class="error" hidden></p>
+
+      <div class="diff-split">
+        <ul id="diff-files" class="diff-files" aria-label="Changed files"></ul>
+        <div id="diff-view" class="diff-view" tabindex="0" aria-label="Diff"></div>
+      </div>
     </div>
   </section>
 </main>

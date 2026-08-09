@@ -254,6 +254,8 @@ function renderMain() {
 
   if (sandbox && !session) renderSandboxPanel(sandbox);
   if (session) renderSessionPanel(session, sandbox);
+  // Nothing to read the workspace for while the panel holding it is closed.
+  if (!session) stopDiffPoll();
 }
 
 function renderSandboxPanel(b) {
@@ -468,6 +470,12 @@ function selectSession(id) {
 
   const term = ensureTerm();
   term.reset();
+
+  // A different session may be a different sandbox, so nothing about the diff
+  // on screen carries over. The terminal is what someone opening a session
+  // came for; the changes are a click away.
+  resetDiff();
+  setSessionView('terminal');
 
   renderList();
   renderMain();
@@ -770,6 +778,357 @@ $('term-sandbox').addEventListener('click', () => {
   const b = selectedSandbox();
   if (b) selectSandbox(b.id);
 });
+
+/* ---------- diff browser ---------- */
+
+/* What the agent has actually done to the files, beside what it says it is
+   doing. The workspace is bind-mounted from the host, so the manager reads it
+   there: the diff is the same either way, and it is still readable once the
+   sandbox has been stopped. */
+
+const diff = {
+  view: 'terminal', // which half of the session panel is showing
+  base: 'head',     // uncommitted work, or everything this branch changed
+  path: null,       // the file open in the right-hand pane
+  oldPath: '',      // where it was renamed from, without which git shows a new file
+  sig: null,        // the file list as last drawn, so a poll can leave it alone
+  timer: null,
+  list: 0,          // request counters: only the newest answer may draw
+  file: 0,
+};
+
+// One letter per status, which is what a file list has room for.
+const DIFF_MARK = {
+  added: 'A', modified: 'M', deleted: 'D',
+  renamed: 'R', copied: 'C', typechange: 'T', untracked: 'U',
+};
+
+function resetDiff() {
+  diff.path = null;
+  diff.oldPath = '';
+  diff.sig = null;
+  diff.list++;
+  diff.file++;
+  $('diff-files').textContent = '';
+  $('diff-view').textContent = '';
+  $('diff-error').hidden = true;
+  setDiffCount(null);
+}
+
+function setSessionView(view) {
+  diff.view = view;
+  const showDiff = view === 'diff';
+
+  $('diff-pane').hidden = !showDiff;
+  $('terminal').hidden = showDiff;
+  $('term-keys').hidden = showDiff;
+
+  for (const [id, on] of [['tab-terminal', !showDiff], ['tab-diff', showDiff]]) {
+    $(id).classList.toggle('active', on);
+    $(id).setAttribute('aria-selected', String(on));
+  }
+
+  if (showDiff) {
+    loadDiff(true);
+    startDiffPoll();
+    return;
+  }
+  stopDiffPoll();
+  // The terminal was laid out at zero size while it was hidden, so it has to
+  // measure itself again before it is worth looking at.
+  if (state.refit) state.refit();
+  if (!narrow.matches && state.term) state.term.focus();
+}
+
+$('tab-terminal').addEventListener('click', () => setSessionView('terminal'));
+$('tab-diff').addEventListener('click', () => setSessionView('diff'));
+$('diff-refresh').addEventListener('click', () => loadDiff(true));
+
+$('diff-base').addEventListener('change', (ev) => {
+  diff.base = ev.target.value;
+  // A different base is a different set of files, and the one that was open
+  // may not be among them.
+  diff.path = null;
+  diff.oldPath = '';
+  diff.sig = null;
+  loadDiff(true);
+});
+
+/* An agent edits files while you are reading them, so the list is re-read on
+   the same cadence as everything else — but only while it is the thing on
+   screen, and only when the answer differs from what is already drawn. */
+function startDiffPoll() {
+  stopDiffPoll();
+  diff.timer = setInterval(() => {
+    if (diff.view !== 'diff' || document.visibilityState !== 'visible') return;
+    loadDiff();
+  }, 5000);
+}
+
+function stopDiffPoll() {
+  clearInterval(diff.timer);
+  diff.timer = null;
+}
+
+function setDiffCount(n) {
+  const badge = $('diff-count');
+  badge.textContent = n ? String(n) : '';
+  badge.hidden = !n;
+}
+
+function showDiffError(message) {
+  const box = $('diff-error');
+  box.textContent = message;
+  box.hidden = false;
+}
+
+async function loadDiff(force) {
+  const b = selectedSandbox();
+  if (!b) return;
+
+  const load = ++diff.list;
+  let data;
+  try {
+    data = await api('GET', `/api/sandboxes/${b.id}/diff?base=${diff.base}`);
+  } catch (err) {
+    if (load !== diff.list) return;
+    showDiffError(err.message);
+    return;
+  }
+  if (load !== diff.list) return;
+  $('diff-error').hidden = true;
+
+  if (!data.repo) {
+    diff.sig = null;
+    setDiffCount(null);
+    $('diff-where').textContent = data.workspace || '';
+    $('diff-view').textContent = '';
+    renderDiffNotice(data.message || 'Nothing to compare.');
+    return;
+  }
+  renderDiffChanges(data.changes, force);
+}
+
+function renderDiffNotice(text) {
+  const list = $('diff-files');
+  list.textContent = '';
+  const li = document.createElement('li');
+  li.className = 'diff-empty';
+  li.textContent = text;
+  list.append(li);
+}
+
+function renderDiffChanges(changes, force) {
+  const files = changes.files || [];
+
+  // "Whole branch" falls back to uncommitted work when there is no branch to
+  // have left — the manager says which it settled on, and this shows it rather
+  // than the option that was asked for.
+  const branch = changes.branch || 'HEAD';
+  const where = $('diff-where');
+  where.textContent = changes.baseRef === 'HEAD'
+    ? `${branch} · uncommitted`
+    : `${branch} · since ${changes.baseRef}`;
+  // Paths are relative to the checkout, which is not always the workspace: a
+  // workspace inside a repository is diffed against the whole of it.
+  where.title = changes.root;
+
+  // Redrawing on every poll would take the hover, the focus and the scroll
+  // position of whoever is reading, so the list is left alone until it is
+  // actually saying something different.
+  const sig = [changes.base, changes.baseRef,
+    files.map((f) => `${f.path}:${f.status}:${f.added}:${f.removed}`).join('|')].join('#');
+  if (!force && sig === diff.sig) return;
+  diff.sig = sig;
+
+  setDiffCount(files.length);
+  renderDiffFiles(files, changes.truncated);
+
+  // The file being read has changed under it, or has stopped being one of the
+  // changed files at all; either way what is on the right has to follow.
+  const open = files.find((f) => f.path === diff.path);
+  if (open || files.length) {
+    openDiffFile(open || files[0]);
+  } else {
+    diff.path = null;
+    $('diff-view').textContent = '';
+  }
+}
+
+function renderDiffFiles(files, truncated) {
+  const list = $('diff-files');
+  list.textContent = '';
+
+  if (files.length === 0) {
+    renderDiffNotice('Nothing has changed in this workspace.');
+    return;
+  }
+
+  for (const f of files) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'diff-file' + (f.path === diff.path ? ' active' : '');
+    btn.title = f.oldPath ? `${f.oldPath} → ${f.path}` : f.path;
+    btn.dataset.path = f.path;
+
+    const mark = document.createElement('span');
+    mark.className = `diff-mark ${f.status}`;
+    mark.textContent = DIFF_MARK[f.status] || '?';
+    mark.title = f.status;
+
+    // Split so the two halves can be treated differently: the directory is
+    // context, dimmed and dropped first when the row runs out of room, and the
+    // file name is the thing being looked for and always stays.
+    const cut = f.path.lastIndexOf('/');
+    const name = document.createElement('span');
+    name.className = 'diff-name';
+    if (cut >= 0) {
+      const dir = document.createElement('span');
+      dir.className = 'diff-dir';
+      dir.textContent = f.path.slice(0, cut + 1);
+      name.append(dir);
+    }
+    const base = document.createElement('span');
+    base.className = 'diff-base';
+    base.textContent = f.path.slice(cut + 1);
+    name.append(base);
+
+    const counts = document.createElement('span');
+    counts.className = 'diff-counts';
+    if (f.binary) {
+      counts.append(chip('bin', 'diff-bin'));
+    } else {
+      if (f.added) counts.append(chip(`+${f.added}`, 'diff-plus'));
+      if (f.removed) counts.append(chip(`−${f.removed}`, 'diff-minus'));
+    }
+
+    btn.append(mark, name, counts);
+    btn.addEventListener('click', () => openDiffFile(f));
+    li.append(btn);
+    list.append(li);
+  }
+
+  if (truncated) {
+    const li = document.createElement('li');
+    li.className = 'diff-empty';
+    li.textContent = 'Too many changed files to list them all.';
+    list.append(li);
+  }
+}
+
+function chip(text, cls) {
+  const el = document.createElement('span');
+  el.className = cls;
+  el.textContent = text;
+  return el;
+}
+
+function markActiveDiffFile() {
+  for (const btn of $('diff-files').querySelectorAll('.diff-file')) {
+    btn.classList.toggle('active', btn.dataset.path === diff.path);
+  }
+}
+
+async function openDiffFile(f) {
+  const b = selectedSandbox();
+  if (!b) return;
+
+  const reopening = f.path === diff.path;
+  diff.path = f.path;
+  diff.oldPath = f.oldPath || '';
+  markActiveDiffFile();
+
+  const params = new URLSearchParams({ path: f.path, base: diff.base });
+  if (f.oldPath) params.set('old', f.oldPath);
+
+  const load = ++diff.file;
+  let data;
+  try {
+    data = await api('GET', `/api/sandboxes/${b.id}/diff/file?${params}`);
+  } catch (err) {
+    if (load !== diff.file) return;
+    renderDiffMessage(err.message);
+    return;
+  }
+  if (load !== diff.file) return;
+  renderFileDiff(data, f, reopening);
+}
+
+function renderDiffMessage(text) {
+  const view = $('diff-view');
+  view.textContent = '';
+  const p = document.createElement('p');
+  p.className = 'diff-empty';
+  p.textContent = text;
+  view.append(p);
+}
+
+function renderFileDiff(data, entry, reopening) {
+  const view = $('diff-view');
+  // Re-reading the file someone is part-way down should not throw them back
+  // to the top of it.
+  const scroll = reopening ? view.scrollTop : 0;
+  view.textContent = '';
+
+  const head = document.createElement('div');
+  head.className = 'diff-file-head';
+  head.textContent = entry.oldPath ? `${entry.oldPath} → ${data.path}` : data.path;
+  view.append(head);
+
+  if (data.binary) {
+    view.append(noteEl('Binary file — nothing to show line by line.'));
+    return;
+  }
+  const hunks = data.hunks || [];
+  if (!hunks.length) {
+    view.append(noteEl('No line changes; only the file’s mode or metadata moved.'));
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  for (const hunk of hunks) {
+    const header = document.createElement('div');
+    header.className = 'diff-row hunk';
+    header.append(gutter(''), gutter(''));
+    const text = document.createElement('span');
+    text.className = 'diff-text';
+    text.textContent = [hunk.range, hunk.header].filter(Boolean).join(' ');
+    header.append(text);
+    frag.append(header);
+
+    for (const line of hunk.lines) {
+      const row = document.createElement('div');
+      row.className = `diff-row ${line.kind}`;
+      row.append(gutter(line.old ? String(line.old) : ''), gutter(line.new ? String(line.new) : ''));
+      const text = document.createElement('span');
+      text.className = 'diff-text';
+      // The line's own text, without the +/- git puts in front of it: the row
+      // is already coloured, and this is the half worth copying out.
+      text.textContent = line.text;
+      row.append(text);
+      frag.append(row);
+    }
+  }
+  view.append(frag);
+
+  if (data.truncated) view.append(noteEl('This diff is too long to show in full.'));
+  view.scrollTop = scroll;
+}
+
+function gutter(text) {
+  const el = document.createElement('span');
+  el.className = 'diff-ln';
+  el.textContent = text;
+  return el;
+}
+
+function noteEl(text) {
+  const p = document.createElement('p');
+  p.className = 'diff-empty';
+  p.textContent = text;
+  return p;
+}
 
 /* ---------- start-agent dialog ---------- */
 

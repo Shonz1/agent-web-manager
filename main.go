@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/oleksiiipatov/agent-web-manager/internal/git"
 	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
 	"github.com/oleksiiipatov/agent-web-manager/internal/notify"
 	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
@@ -34,6 +35,7 @@ func run() error {
 	var (
 		addr     = flag.String("addr", "127.0.0.1:7788", "address to listen on")
 		sbxBin   = flag.String("sbx", "sbx", "path to the sbx binary")
+		gitBin   = flag.String("git", "git", "path to the git binary, used to read a workspace's changes")
 		stateDir = flag.String("state-dir", defaultStateDir(), "directory for persisted sandbox state")
 		showVer  = flag.Bool("version", false, "print version and exit")
 	)
@@ -65,7 +67,7 @@ func run() error {
 	}
 	defer stopNotify()
 
-	webSrv := web.NewServer(mgr, client, notifier, web.StaticFS())
+	webSrv := web.NewServer(mgr, client, notifier, git.New(*gitBin), web.StaticFS())
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           webSrv.Handler(),
