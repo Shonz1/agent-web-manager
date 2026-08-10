@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 	"github.com/gorilla/websocket"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
 )
 
 const (

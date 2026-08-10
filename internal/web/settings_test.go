@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/git"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
-	"github.com/oleksiiipatov/agent-web-manager/internal/notify"
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/git"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/notify"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // testServer builds a server over empty state with no notifications

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/git"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/git"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // worktreeServer returns a server holding one sandbox on the given workspace,

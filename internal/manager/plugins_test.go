@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // gitMarket and repoMarket are the two source shapes Claude Code records.

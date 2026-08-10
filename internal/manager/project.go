@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // ErrProjectNotFound is returned when a project id names nothing this

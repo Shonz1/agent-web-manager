@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 func TestWriteEventFramesTheKindAndPayload(t *testing.T) {

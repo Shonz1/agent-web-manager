@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 // eventPing is how often a comment is written down an otherwise idle stream.

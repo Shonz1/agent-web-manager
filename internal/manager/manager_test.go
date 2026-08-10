@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // Before sandboxes and sessions were separate things, state was a list of

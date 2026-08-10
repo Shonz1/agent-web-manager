@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // Claude Code keeps its plugins in ~/.claude/plugins, and sbx does not carry

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/git"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/git"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 // worktreeTimeout bounds the git half of the call. Adding a worktree writes a

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // kitsFolder writes a kits directory holding the named kits, each a directory

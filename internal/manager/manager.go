@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 var (

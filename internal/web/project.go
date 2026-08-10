@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/git"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/git"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 // projectTimeout bounds a project read: assembling a view walks its

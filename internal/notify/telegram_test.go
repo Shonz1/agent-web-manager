@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 // serve stands in for the Telegram API and hands back what it was sent.
