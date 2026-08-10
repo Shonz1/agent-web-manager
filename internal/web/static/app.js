@@ -983,18 +983,6 @@ $('btn-delete-sandbox').addEventListener('click', () =>
 
 /* ---------- session actions ---------- */
 
-// Moved here from the sandbox panel: a terminal is opened in whatever
-// sandbox the session on screen is already running in, rather than asked
-// for up front.
-$('btn-terminal').addEventListener('click', () =>
-  withSession(async (s) => {
-    const term = ensureTerm();
-    const created = await api('POST', `/api/sandboxes/${s.sandboxId}/sessions`,
-      { kind: 'shell', cols: term.cols, rows: term.rows });
-    await refresh();
-    selectSession(created.id);
-  }));
-
 $('btn-interrupt').addEventListener('click', () =>
   withSession((s) => api('POST', `/api/sessions/${s.id}/interrupt`)));
 
@@ -1086,6 +1074,17 @@ function setSessionView(view) {
 
 $('tab-terminal').addEventListener('click', () => setSessionView('terminal'));
 $('tab-diff').addEventListener('click', () => setSessionView('diff'));
+
+// A shell is opened in whatever sandbox the session on screen is already
+// running in, rather than asked for up front.
+$('tab-shell').addEventListener('click', () =>
+  withSession(async (s) => {
+    const term = ensureTerm();
+    const created = await api('POST', `/api/sandboxes/${s.sandboxId}/sessions`,
+      { kind: 'shell', cols: term.cols, rows: term.rows });
+    await refresh();
+    selectSession(created.id);
+  }));
 $('diff-refresh').addEventListener('click', () => loadDiff(true));
 
 $('diff-base').addEventListener('change', (ev) => {
