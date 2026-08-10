@@ -91,6 +91,30 @@ func defaultName(agent, workspace string) string {
 	return agent + "-" + base
 }
 
+// DefaultWorktreeSandboxName names a worktree's sandbox after the project it
+// belongs to plus a random slug, rather than the branch it was made for: a
+// branch name can be long, nested with slashes, or shared by worktrees made
+// from it more than once, none of which make a good — or unique — sandbox
+// name on their own.
+func DefaultWorktreeSandboxName(projectName string) string {
+	base := unsafeName.ReplaceAllString(strings.ToLower(projectName), "-")
+	base = strings.Trim(base, "-")
+	if base == "" {
+		base = "project"
+	}
+	return base + "-" + randomSlug()
+}
+
+// randomSlug is a short random lowercase-hex string, enough to keep sandbox
+// names made moments apart from colliding without meaning anything itself.
+func randomSlug() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand failing means the process cannot continue safely
+	}
+	return hex.EncodeToString(b)
+}
+
 // resolveWorkspace expands and validates a host directory to mount into the
 // sandbox.
 func resolveWorkspace(p string) (string, error) {
