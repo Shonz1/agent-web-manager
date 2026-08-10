@@ -206,38 +206,6 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 	return sb, nil
 }
 
-// AdoptSandbox registers a sandbox that already exists — one created with the
-// sbx CLI directly, or left behind by an earlier state directory. Its agent
-// and workspaces are read back from the sandbox's own spec.
-func (m *Manager) AdoptSandbox(ctx context.Context, name string) (*Sandbox, error) {
-	if !sbx.ValidName(name) {
-		return nil, fmt.Errorf("invalid sandbox name %q", name)
-	}
-	box, exists, err := m.client.Get(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, fmt.Errorf("no sandbox named %q", name)
-	}
-
-	sb := sandboxFromSbx(box)
-
-	m.mu.Lock()
-	if _, taken := m.byName[sb.Name]; taken {
-		m.mu.Unlock()
-		return nil, ErrExists
-	}
-	m.sandboxes[sb.ID] = sb
-	m.byName[sb.Name] = sb.ID
-	m.mu.Unlock()
-
-	if err := m.saveSandboxes(); err != nil {
-		return nil, err
-	}
-	return sb, nil
-}
-
 // GetSandbox returns a sandbox by ID.
 func (m *Manager) GetSandbox(id string) (*Sandbox, error) {
 	m.mu.RLock()
@@ -308,8 +276,7 @@ func (m *Manager) sandboxStatuses(ctx context.Context) map[string]string {
 	return status
 }
 
-// ManagedNames reports the sandbox names this manager already knows about, so
-// callers can tell which of sbx's sandboxes are still free to adopt.
+// ManagedNames reports the sandbox names this manager already knows about.
 func (m *Manager) ManagedNames() map[string]bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

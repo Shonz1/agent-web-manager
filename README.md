@@ -66,52 +66,46 @@ None of them is a flag, on purpose — see [Telegram](#telegram).
 
 ## Using it
 
-### 1. Create a sandbox
+### 1. Create a project
 
-**New sandbox** → **Create one**: pick an agent (`claude`, `codex`, `gemini`,
-`shell`, …) and a host directory to use as the workspace. **Browse…** opens a
-folder picker that walks the host filesystem (git checkouts are tagged), or
-type the path directly — `~` is expanded. Optionally set extra workspaces
-(append `:ro` for read-only) and published ports.
-
-The name is not yours to pick: the UI does not offer one, and the manager names
-the sandbox `<agent>-<dir>` after the workspace, numbering it past anything
-already holding that name. A sandbox made for a worktree is named after its
-project and a random slug instead, since a branch name makes neither a good nor
-a unique sandbox name.
-
-This runs `sbx create <agent> --name <name> <workspace>` and nothing else. No
-agent starts yet; the first create for an agent can take minutes while its
-image is pulled.
-
-**New sandbox** → **Add an existing one** instead lists sandboxes `sbx` already
-knows about, including ones created straight from the CLI or left over from a
-previous state directory. Its agent and workspaces come from the sandbox
-itself. Sandboxes this manager already lists show up marked **already added**
-and cannot be picked — adding one twice is not a thing.
+**New project**: give it a name and a host folder to work in. **Browse…**
+opens a folder picker that walks the host filesystem (git checkouts are
+tagged), or type the path directly — `~` is expanded. Nothing else happens
+yet: no sandbox is made until the first session starts in it.
 
 ### 2. Start sessions in it
 
-Select the sandbox and start as many terminals as you want:
+**+ New session**, inside the project: pick an agent (`claude`, `codex`,
+`gemini`, `shell`, …) and any arguments to pass it after `--`. The first
+plain session in a project makes its main sandbox — `sbx create <agent>
+--name <name> <workspace>`, named `<agent>-<dir>` after the workspace and
+numbered past anything already holding that name — and every later plain
+session in the project reuses it, on whichever agent made it. No agent starts
+until then; the first create for an agent can take minutes while its image is
+pulled.
 
-- **Start agent** runs the sandbox's own agent (`sbx run --name <name>`, with
-  any arguments you pass after `--`). Each attachment gets its own agent
-  process on its own TTY, so several can work in one sandbox at once.
+Once a session is running, its sandbox panel starts more of them:
+
+- **Start agent** runs the sandbox's own agent again (`sbx run --name
+  <name>`, with any arguments you pass after `--`). Each attachment gets its
+  own agent process on its own TTY, so several can work in one sandbox at
+  once.
 - **Shell**, above a session, opens an interactive shell beside it (`sbx exec
-  -it <name> bash`) in the same sandbox that session is running in, and attaches
-  to it — run a build in one while the agents work in others.
+  -it <name> bash`) in the same sandbox that session is running in, and
+  attaches to it — run a build in one while the agents work in others.
 
 Neither is limited. Anything a session draws — full TUIs included — renders in
-the terminal. Sessions appear nested under their sandbox in the sidebar; click
-one to attach.
+the terminal. A project's sandboxes and sessions appear nested under it in the
+sidebar; click one to attach.
 
 ### A worktree of its own
 
-**Start agent** offers to give the session a git worktree: tick the box, name a
-branch, and the agent starts on a branch and a checkout that nothing else is
-using. It is offered here because here is where the choice has to be made — a
-sandbox's mounts are fixed by `sbx create`, so a worktree cannot be handed to a
-session that is already running.
+**New session** and **Start agent** both offer to give the session a git
+worktree: tick the box, name a branch, and the agent starts on a branch and a
+checkout that nothing else is using. It is offered where a session starts
+because that is where the choice has to be made — a sandbox's mounts are
+fixed by `sbx create`, so a worktree cannot be handed to a session that is
+already running.
 
 Ticking it does three things, and reports all three:
 
@@ -521,16 +515,18 @@ reaches it with the tab closed.
 | --- | --- | --- |
 | `GET` | `/api/health` | Whether `sbx` is usable |
 | `GET` | `/api/agents` | Agents `sbx` can launch |
-| `GET` | `/api/sbx/sandboxes` | `sbx ls` output, each entry flagged `managed` |
 | `GET` | `/api/fs/dirs` | Sub-directories of `?path=` for the folder picker |
 | `GET` | `/api/events` | Server-sent stream of `attention` and `done` events |
 | `GET` | `/api/settings/telegram` | Notification settings, never including the token |
 | `PUT` | `/api/settings/telegram` | Check a bot's credentials, then save and use them; an empty `token` keeps the stored one |
 | `DELETE` | `/api/settings/telegram` | Turn Telegram off and forget the token |
 | `POST` | `/api/settings/telegram/test` | Send a test message |
+| `GET` | `/api/projects` | Projects, each with its sandboxes and sessions |
+| `POST` | `/api/projects` | Create a project |
+| `GET` | `/api/projects/{id}` | One project |
+| `DELETE` | `/api/projects/{id}` | Delete it, along with every sandbox and session inside it |
+| `POST` | `/api/projects/{id}/sessions` | Start a session in it — its main sandbox, or a fresh one on a worktree |
 | `GET` | `/api/sandboxes` | Managed sandboxes, with live status and sessions |
-| `POST` | `/api/sandboxes` | Create a sandbox |
-| `POST` | `/api/sandboxes/adopt` | Take over a sandbox that already exists |
 | `GET` | `/api/sandboxes/{id}` | One sandbox |
 | `POST` | `/api/sandboxes/{id}/stop` | End its sessions and stop it |
 | `DELETE` | `/api/sandboxes/{id}` | Destroy it permanently, with its worktree checkout if it has one |
@@ -544,23 +540,32 @@ reaches it with the tab closed.
 | `DELETE` | `/api/sessions/{sid}` | End it |
 | `GET` | `/api/sessions/{sid}/attach` | WebSocket terminal |
 
-Create a sandbox:
+Create a project:
 
 ```bash
-curl -X POST localhost:7788/api/sandboxes \
+curl -X POST localhost:7788/api/projects \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"claude","workspace":"/path/to/project","name":"claude-proj"}'
+  -d '{"name":"proj","path":"/path/to/project"}'
 ```
 
-Start an agent session in it (`{id}` is the sandbox ID the call above
-returned). The response carries the `title` the manager assigned it — and,
+Start an agent session in it (`{id}` is the project ID the call above
+returned). This first one makes the project's main sandbox; the response
+carries both it and the session, whose `title` the manager assigned — and,
 once the agent has generated one, later reads of the session carry its own
 `aiTitle` beside it. A live session also carries `activity`, one of `busy`,
-`waiting` or `idle`; a session that is not running carries none. Repeat the
-call for a second agent:
+`waiting` or `idle`; a session that is not running carries none:
 
 ```bash
-curl -X POST localhost:7788/api/sandboxes/{id}/sessions \
+curl -X POST localhost:7788/api/projects/{id}/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"agent","agent":"claude"}'
+```
+
+Repeat for a second agent in the same sandbox — `{sbid}` is the `sandbox.id`
+the call above returned:
+
+```bash
+curl -X POST localhost:7788/api/sandboxes/{sbid}/sessions \
   -H 'Content-Type: application/json' \
   -d '{"kind":"agent","agentArgs":["--continue"]}'
 ```
@@ -571,7 +576,7 @@ the `session` running there — and the session half of the request is the same 
 the call above takes:
 
 ```bash
-curl -X POST localhost:7788/api/sandboxes/{id}/worktree \
+curl -X POST localhost:7788/api/sandboxes/{sbid}/worktree \
   -H 'Content-Type: application/json' \
   -d '{"kind":"agent","branch":"feature-x"}'
 ```
@@ -580,7 +585,7 @@ Open a shell alongside them. Reads of a shell session carry its
 `lastCommand`, which is where `aiTitle` would be for an agent:
 
 ```bash
-curl -X POST localhost:7788/api/sandboxes/{id}/sessions \
+curl -X POST localhost:7788/api/sandboxes/{sbid}/sessions \
   -H 'Content-Type: application/json' \
   -d '{"kind":"shell"}'
 ```
@@ -591,8 +596,8 @@ one file's diff already parsed, so nothing reading this has to understand git's
 output:
 
 ```bash
-curl 'localhost:7788/api/sandboxes/{id}/diff?base=branch'
-curl 'localhost:7788/api/sandboxes/{id}/diff/file?path=internal/server/handler.go'
+curl 'localhost:7788/api/sandboxes/{sbid}/diff?base=branch'
+curl 'localhost:7788/api/sandboxes/{sbid}/diff/file?path=internal/server/handler.go'
 ```
 
 Both check the request origin, since between them they return the contents of
