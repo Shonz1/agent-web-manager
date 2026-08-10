@@ -77,6 +77,16 @@ func (s *Server) Handler() http.Handler {
 	// UI to offer sandboxes that can still be adopted.
 	mux.HandleFunc("GET /api/sbx/sandboxes", s.handleSbxSandboxes)
 
+	// Projects are the primary way of working: a session is started by
+	// naming one rather than a sandbox, which is made or reused underneath.
+	mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+	mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
+	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
+	mux.HandleFunc("POST /api/projects/{id}/sessions", s.handleStartProjectSession)
+
+	// Sandboxes stay reachable directly for advanced use: adopting one sbx
+	// already knows about, or managing one outside any project.
 	mux.HandleFunc("GET /api/sandboxes", s.handleListSandboxes)
 	mux.HandleFunc("POST /api/sandboxes", s.handleCreateSandbox)
 	mux.HandleFunc("POST /api/sandboxes/adopt", s.handleAdoptSandbox)
@@ -333,7 +343,8 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 
 func statusFor(err error) int {
 	switch {
-	case errors.Is(err, manager.ErrSandboxNotFound), errors.Is(err, manager.ErrSessionNotFound):
+	case errors.Is(err, manager.ErrSandboxNotFound), errors.Is(err, manager.ErrSessionNotFound),
+		errors.Is(err, manager.ErrProjectNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, manager.ErrExists):
 		return http.StatusConflict

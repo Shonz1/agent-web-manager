@@ -84,7 +84,7 @@ func TestSandboxRoundTrip(t *testing.T) {
 	sb := &Sandbox{ID: "id1", Name: "box", Agent: "shell", Workspace: "/w"}
 	m.sandboxes[sb.ID] = sb
 	m.byName[sb.Name] = sb.ID
-	if err := m.save(); err != nil {
+	if err := m.saveSandboxes(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -249,7 +249,7 @@ func TestLastActivityAtRoundTrip(t *testing.T) {
 	sb := &Sandbox{ID: "id1", Name: "box", Agent: "shell", CreatedAt: activity, LastActivityAt: activity}
 	m.sandboxes[sb.ID] = sb
 	m.byName[sb.Name] = sb.ID
-	if err := m.save(); err != nil {
+	if err := m.saveSandboxes(); err != nil {
 		t.Fatal(err)
 	}
 

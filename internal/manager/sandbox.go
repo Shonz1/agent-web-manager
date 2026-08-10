@@ -25,6 +25,19 @@ type Sandbox struct {
 	// workspaces were read back from the sandbox itself, so it cannot be
 	// faithfully recreated once it is gone.
 	Adopted bool `json:"adopted,omitempty"`
+
+	// ProjectID is the project this sandbox belongs to, or empty for one made
+	// directly - by "sbx create" outside this manager, or through the
+	// advanced sandbox screen rather than a project.
+	ProjectID string `json:"projectId,omitempty"`
+	// IsWorktree marks a sandbox mounted on a worktree of a project's
+	// repository rather than on the project's folder itself. A project has at
+	// most one sandbox that is not one of these; see EnsureProjectSandbox.
+	IsWorktree bool `json:"isWorktree,omitempty"`
+	// RepoRoot is the main working tree the IsWorktree checkout belongs to, so
+	// its worktree can be removed from git when this sandbox is deleted along
+	// with its project. Empty when IsWorktree is false.
+	RepoRoot string `json:"repoRoot,omitempty"`
 }
 
 // SandboxView is the JSON-facing snapshot of a sandbox: the persisted record,

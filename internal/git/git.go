@@ -282,6 +282,22 @@ func (c *Client) branch(ctx context.Context, root string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// Branch returns the branch currently checked out in dir, or "" if dir is
+// not a git checkout, has no commits yet, or is in a detached HEAD state —
+// callers that only want something to show beside a name treat all of those
+// alike rather than as errors.
+func (c *Client) Branch(ctx context.Context, dir string) string {
+	root, err := c.root(ctx, dir)
+	if err != nil {
+		return ""
+	}
+	b, err := c.branch(ctx, root)
+	if err != nil {
+		return ""
+	}
+	return b
+}
+
 // resolveBase turns a base into the revision to diff against and the name to
 // show for it.
 func (c *Client) resolveBase(ctx context.Context, root string, base Base) (rev, ref string, err error) {
