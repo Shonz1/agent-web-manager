@@ -19,12 +19,10 @@
   </header>
 
   <button id="new-project" class="primary block">+ New project</button>
-  <button id="new-sandbox" class="primary block" hidden>+ New sandbox</button>
 
   <nav id="sandbox-list" class="sandbox-list" aria-label="Projects"></nav>
 
   <footer class="sidebar-foot">
-    <button id="toggle-advanced" type="button" class="settings-link"></button>
     <button id="open-settings" type="button" class="settings-link"></button>
     <span id="version">agent-web-manager</span>
   </footer>
@@ -324,77 +322,6 @@
     <menu>
       <button type="button" id="session-cancel">Cancel</button>
       <button type="button" id="session-submit" class="primary">Start</button>
-    </menu>
-  </form>
-</dialog>
-
-<dialog id="create-dialog">
-  <form id="create-form" method="dialog">
-    <h2 id="create-title">New sandbox</h2>
-
-    <div class="source-toggle" role="radiogroup" aria-label="Sandbox source">
-      <label><input type="radio" name="source" value="new" checked> Create one</label>
-      <label><input type="radio" name="source" value="existing"> Add an existing one</label>
-    </div>
-
-    <div id="fields-new">
-      <label>
-        Agent
-        <select id="f-agent" required></select>
-        <small>The agent this sandbox is built for. Agent sessions run it; shell sessions do not.</small>
-      </label>
-
-      <label>
-        Workspace directory (on this host)
-        <span class="with-button">
-          <input id="f-workspace" type="text" placeholder="/Users/you/projects/my-app" required
-                 autocomplete="off" spellcheck="false">
-          <button type="button" id="f-workspace-browse" title="Pick a folder">Browse…</button>
-        </span>
-        <small>
-          Bind-mounted into the sandbox as the working directory. The sandbox is
-          named after it, as <code>&lt;agent&gt;-&lt;dir&gt;</code>.
-        </small>
-      </label>
-    </div>
-
-    <div id="fields-existing" hidden>
-      <label>
-        Sandbox
-        <span class="with-button">
-          <select id="f-sandbox"></select>
-          <button type="button" id="f-sandbox-refresh" title="Reload the sandbox list">↻</button>
-        </span>
-        <small id="f-sandbox-hint">
-          Takes over a sandbox <code>sbx</code> already knows about, including ones created
-          outside this manager. Its agent and workspaces come from the sandbox itself.
-        </small>
-      </label>
-    </div>
-
-    <details id="create-advanced">
-      <summary>Advanced</summary>
-
-      <label>
-        Extra workspaces <span class="optional">one per line</span>
-        <textarea id="f-extra" rows="2" placeholder="/Users/you/docs:ro" spellcheck="false"></textarea>
-        <small>
-          Append <code>:ro</code> to mount read-only.
-          <button type="button" id="f-extra-browse" class="link">Add folder…</button>
-        </small>
-      </label>
-
-      <label>
-        Published ports <span class="optional">one per line</span>
-        <textarea id="f-publish" rows="2" placeholder="3000:3000" spellcheck="false"></textarea>
-      </label>
-    </details>
-
-    <p id="create-error" class="error" hidden></p>
-
-    <menu>
-      <button type="button" id="create-cancel">Cancel</button>
-      <button type="button" id="create-submit" class="primary">Create sandbox</button>
     </menu>
   </form>
 </dialog>

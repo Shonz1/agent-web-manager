@@ -73,10 +73,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/settings/telegram", s.handleDeleteTelegramSettings)
 	mux.HandleFunc("POST /api/settings/telegram/test", s.handleTestTelegram)
 
-	// Everything sbx knows about, managed by this tool or not. Used by the
-	// UI to offer sandboxes that can still be adopted.
-	mux.HandleFunc("GET /api/sbx/sandboxes", s.handleSbxSandboxes)
-
 	// Projects are the primary way of working: a session is started by
 	// naming one rather than a sandbox, which is made or reused underneath.
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
@@ -85,11 +81,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("POST /api/projects/{id}/sessions", s.handleStartProjectSession)
 
-	// Sandboxes stay reachable directly for advanced use: adopting one sbx
-	// already knows about, or managing one outside any project.
+	// Sandboxes stay reachable directly too: a project's own sandboxes are
+	// listed and managed through these once a session has made one.
 	mux.HandleFunc("GET /api/sandboxes", s.handleListSandboxes)
-	mux.HandleFunc("POST /api/sandboxes", s.handleCreateSandbox)
-	mux.HandleFunc("POST /api/sandboxes/adopt", s.handleAdoptSandbox)
 	mux.HandleFunc("GET /api/sandboxes/{id}", s.handleGetSandbox)
 	mux.HandleFunc("DELETE /api/sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /api/sandboxes/{id}/stop", s.handleStopSandbox)
@@ -154,87 +148,12 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agents": sbx.Agents})
 }
 
-// sbxSandboxView is a sandbox sbx reported, plus whether this manager already
-// has a record of it — which is what tells the UI what can still be adopted.
-type sbxSandboxView struct {
-	sbx.Sandbox
-	Managed bool `json:"managed"`
-}
-
-func (s *Server) handleSbxSandboxes(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	boxes, err := s.client.List(ctx)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	managed := s.mgr.ManagedNames()
-	out := make([]sbxSandboxView, 0, len(boxes))
-	for _, b := range boxes {
-		out = append(out, sbxSandboxView{Sandbox: b, Managed: managed[b.Name]})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"sandboxes": out})
-}
-
 // --- sandboxes ---
 
 func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	writeJSON(w, http.StatusOK, map[string]any{"sandboxes": s.mgr.ListSandboxes(ctx)})
-}
-
-func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
-	var req manager.CreateSandboxRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	sb, err := s.mgr.CreateSandbox(req)
-	if err != nil {
-		writeError(w, statusFor(err), err)
-		return
-	}
-
-	// Creating can take minutes; report the sandbox with a fresh status
-	// rather than making the UI poll for it.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	view, err := s.mgr.SandboxView(ctx, sb.ID)
-	if err != nil {
-		writeError(w, statusFor(err), err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, view)
-}
-
-// handleAdoptSandbox takes over a sandbox that already exists rather than
-// creating one.
-func (s *Server) handleAdoptSandbox(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	sb, err := s.mgr.AdoptSandbox(ctx, req.Name)
-	if err != nil {
-		writeError(w, statusFor(err), err)
-		return
-	}
-	view, err := s.mgr.SandboxView(ctx, sb.ID)
-	if err != nil {
-		writeError(w, statusFor(err), err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, view)
 }
 
 func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request) {

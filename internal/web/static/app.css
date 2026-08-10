@@ -879,48 +879,6 @@ dialog .optional,
   font-size: 12.5px;
 }
 
-/* Two mutually exclusive radios drawn as one segmented control. */
-.source-toggle {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 14px;
-}
-.source-toggle label {
-  flex: 1;
-  margin: 0;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-inset);
-  color: var(--text-dim);
-  text-align: center;
-  cursor: pointer;
-}
-.source-toggle label:hover { color: var(--text); }
-.source-toggle label:has(input:checked) {
-  border-color: var(--accent);
-  color: var(--text);
-}
-.source-toggle label:has(input:focus-visible) { outline: 2px solid var(--accent); }
-/* The radio itself only carries state; the label is the visible control. */
-.source-toggle input {
-  width: 0;
-  height: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  position: absolute;
-}
-
-dialog details { margin-bottom: 12px; }
-dialog summary {
-  cursor: pointer;
-  color: var(--text-dim);
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-
 dialog menu {
   display: flex;
   justify-content: flex-end;
@@ -940,17 +898,6 @@ dialog menu {
 .with-button input,
 .with-button select { margin-top: 0; min-width: 0; }
 .with-button button { margin-top: 5px; flex: none; }
-
-button.link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: inherit;
-  text-decoration: underline;
-}
-button.link:hover:not(:disabled) { background: none; }
 
 #browse-dialog { width: min(560px, calc(100vw - 32px)); }
 

@@ -1,8 +1,7 @@
 /* Agent Web Manager — projects in the sidebar, their sessions attached to a
    terminal. A project is the durable thing the user works in; the sandbox a
    session actually runs in is made or reused underneath it and mostly stays
-   out of sight. An "Advanced" mode shows sandboxes directly, for adopting
-   one sbx already knows about or managing one outside any project. */
+   out of sight. */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -10,16 +9,11 @@ const $ = (id) => document.getElementById(id);
 const state = {
   projects: [],
   sandboxes: [],
-  // 'projects' is the primary tree; 'sandboxes' is the advanced one. Both
-  // read from the same two lists, which are always kept current regardless
-  // of which is on screen.
-  mode: 'projects',
   // What the main pane shows: {kind: 'project'|'sandbox'|'session'|'settings', id} or null.
   sel: null,
   term: null,
   fit: null,
   socket: null,
-  sandboxListSig: null,
   projectListSig: null,
   refit: null,
 };
@@ -192,107 +186,15 @@ async function refresh() {
   // sandbox, or the session was ended.
   if (state.sel && !selectionExists(state.sel)) clearSelection();
   pruneDrafts();
-  renderList();
+  renderProjectList();
   renderMain();
 }
 
-function renderList(force) {
-  if (state.mode === 'sandboxes') renderSandboxList(force);
-  else renderProjectList(force);
-}
-
-// sandboxListSignature captures everything renderSandboxList draws, so the 5s
+// projectListSignature captures everything renderProjectList draws, so the 5s
 // poll can skip rebuilding the DOM (and dropping hover/focus) when nothing
-// changed.
-function sandboxListSignature() {
-  const parts = state.sandboxes.map((b) => [
-    b.id, b.name, b.agent, b.status, b.workspace,
-    (b.sessions || []).map((s) => `${s.id}:${s.title}:${sessionSubtitle(s)}:${s.status}:${s.activity || ''}`).join(','),
-  ].join(' '));
-  parts.push(state.sel ? `${state.sel.kind}:${state.sel.id}` : '-');
-  return parts.join('|');
-}
-
-function renderSandboxList(force) {
-  const sig = sandboxListSignature();
-  if (!force && sig === state.sandboxListSig) return;
-  state.sandboxListSig = sig;
-
-  const list = $('sandbox-list');
-  list.textContent = '';
-
-  if (state.sandboxes.length === 0) {
-    const hint = document.createElement('p');
-    hint.className = 'empty-hint';
-    hint.textContent = 'No sandboxes yet.';
-    list.append(hint);
-    return;
-  }
-
-  for (const b of state.sandboxes) {
-    const group = document.createElement('div');
-    group.className = 'sandbox-group';
-
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'sandbox-item'
-      + (state.sel && state.sel.kind === 'sandbox' && state.sel.id === b.id ? ' active' : '');
-
-    const row = document.createElement('div');
-    row.className = 'row';
-
-    const dot = document.createElement('span');
-    dot.className = `dot sandbox-${b.status}`;
-    dot.title = `sandbox ${b.status}`;
-
-    const name = document.createElement('span');
-    name.className = 'name';
-    name.textContent = b.name;
-
-    const agent = document.createElement('span');
-    agent.className = 'badge subtle';
-    agent.textContent = b.agent || 'unknown';
-
-    row.append(dot, name, agent);
-
-    const sub = document.createElement('div');
-    sub.className = 'sub';
-    sub.textContent = shortPath(b.workspace) || 'no workspace mount';
-    sub.title = b.workspace || '';
-
-    item.append(row, sub);
-    item.addEventListener('click', () => selectSandbox(b.id));
-    group.append(item);
-
-    const sessions = b.sessions || [];
-    if (sessions.length) {
-      const rows = document.createElement('div');
-      rows.className = 'session-rows';
-      for (const s of sessions) {
-        const srow = document.createElement('button');
-        srow.type = 'button';
-        srow.className = 'session-row'
-          + (state.sel && state.sel.kind === 'session' && state.sel.id === s.id ? ' active' : '');
-
-        const sdot = document.createElement('span');
-        sdot.className = dotClass(s);
-        sdot.title = dotTitle(s);
-
-        srow.append(sdot, sessionTextEl(s));
-        srow.addEventListener('click', () => selectSession(s.id));
-        rows.append(srow);
-      }
-      group.append(rows);
-    }
-
-    list.append(group);
-  }
-}
-
-// projectListSignature mirrors sandboxListSignature for the project tree. A
-// project session's row depends on its live counterpart in state.sandboxes as
-// well as on the stub the project view carries (which alone has its branch),
-// so both feed the signature.
+// changed. A project session's row depends on its live counterpart in
+// state.sandboxes as well as on the stub the project view carries (which
+// alone has its branch), so both feed the signature.
 function projectListSignature() {
   const parts = state.projects.map((p) => {
     const rows = (p.sessions || []).map((stub) => {
@@ -697,22 +599,15 @@ function applyRoute() {
   try {
     if (!exists) {
       clearSelection();
-      renderList();
+      renderProjectList();
       renderMain();
     } else if (route.kind === 'settings') {
       selectSettings();
     } else if (route.kind === 'project') {
-      state.mode = 'projects';
       selectProject(route.id);
     } else if (route.kind === 'sandbox') {
-      state.mode = 'sandboxes';
       selectSandbox(route.id);
     } else {
-      // A session link does not say which tree it belongs to; a session in a
-      // project's sandbox switches to the project tree, one in a sandbox with
-      // no project switches to the advanced view.
-      const b = findSandbox((findSession(route.id) || {}).sandboxId);
-      if (b) state.mode = b.projectId ? 'projects' : 'sandboxes';
       selectSession(route.id);
     }
   } finally {
@@ -720,7 +615,6 @@ function applyRoute() {
   }
 
   if (!exists) syncURL(true);
-  renderModeChrome();
 }
 
 window.addEventListener('popstate', applyRoute);
@@ -734,45 +628,12 @@ function clearSelection() {
   syncURL(true);
 }
 
-/* ---------- mode (projects vs. advanced sandboxes) ---------- */
-
-function setMode(mode) {
-  if (state.mode === mode) return;
-  state.mode = mode;
-  clearSelection();
-  renderModeChrome();
-  renderList(true);
-  renderMain();
-}
-
-function renderModeChrome() {
-  const advanced = state.mode === 'sandboxes';
-  $('sidebar-title').textContent = advanced ? 'Sandboxes' : 'Projects';
-  $('sandbox-list').setAttribute('aria-label', advanced ? 'Sandboxes' : 'Projects');
-  $('new-project').hidden = advanced;
-  $('new-sandbox').hidden = !advanced;
-  $('toggle-advanced').textContent = advanced ? '← Projects' : '🧰 Advanced';
-  $('toggle-advanced').title = advanced
-    ? 'Back to the project tree'
-    : 'Manage sandboxes directly, including adopting ones made outside this manager';
-  $('empty-title').textContent = advanced ? 'No sandbox selected' : 'No project selected';
-  $('empty-hint-text').textContent = advanced
-    ? 'Create a sandbox, then start agent or shell sessions inside it.'
-    : 'Create a project, then start a session inside it.';
-  for (const btn of document.querySelectorAll('.menu-btn.wide')) {
-    btn.textContent = advanced ? '☰ Sandboxes' : '☰ Projects';
-  }
-}
-
-$('toggle-advanced').addEventListener('click', () =>
-  setMode(state.mode === 'sandboxes' ? 'projects' : 'sandboxes'));
-
 function selectProject(id) {
   state.sel = { kind: 'project', id };
   closeSocket();
   setNav(false);
   syncURL();
-  renderList();
+  renderProjectList();
   renderMain();
 }
 
@@ -781,7 +642,7 @@ function selectSandbox(id) {
   closeSocket();
   setNav(false);
   syncURL();
-  renderList();
+  renderProjectList();
   renderMain();
 }
 
@@ -790,7 +651,7 @@ function selectSettings() {
   closeSocket();
   setNav(false);
   syncURL();
-  renderList();
+  renderProjectList();
   renderMain();
   // Read afresh on every visit: another tab, or the environment at the last
   // restart, may have changed it since this one last looked.
@@ -816,7 +677,7 @@ function selectSession(id) {
   resetDiff();
   setSessionView('terminal');
 
-  renderList();
+  renderProjectList();
   renderMain();
   // After the panel is on screen: a hidden box measures zero, and a restored
   // draft of several lines would be left folded into one.
@@ -1039,7 +900,7 @@ function handleControl(msg) {
       const idx = (b.sessions || []).findIndex((s) => s.id === msg.session.id);
       if (idx >= 0) b.sessions[idx] = msg.session;
     }
-    renderList();
+    renderProjectList();
     renderMain();
   } else if (msg.type === 'error') {
     state.term.writeln(`\r\n\x1b[31m[${msg.message}]\x1b[0m`);
@@ -1808,200 +1669,6 @@ async function submitAgent() {
   }
 }
 
-/* ---------- create-sandbox dialog ---------- */
-
-const dialog = $('create-dialog');
-
-$('new-sandbox').addEventListener('click', () => {
-  $('create-error').hidden = true;
-  applyMode();
-  dialog.showModal();
-  if (createMode() === 'new') $('f-workspace').focus();
-  loadSbxSandboxes();
-});
-
-/* The dialog creates a fresh sandbox or takes over one that already exists;
-   the two modes share no fields. */
-
-function createMode() {
-  const picked = document.querySelector('input[name="source"]:checked');
-  return picked ? picked.value : 'new';
-}
-
-function applyMode() {
-  const existing = createMode() === 'existing';
-
-  $('fields-new').hidden = existing;
-  $('fields-existing').hidden = !existing;
-  // Extra workspaces and ports are fixed at creation time, so they have
-  // nothing to say about a sandbox that already exists.
-  $('create-advanced').hidden = existing;
-
-  // Hidden inputs still take part in form validation, so the constraint has
-  // to move with the mode.
-  $('f-workspace').required = !existing;
-  $('f-agent').required = !existing;
-  $('f-sandbox').required = existing;
-
-  $('create-title').textContent = existing ? 'Add an existing sandbox' : 'New sandbox';
-  $('create-error').hidden = true;
-  updateSubmitLabel();
-}
-
-// The button says what the click will actually do.
-function updateSubmitLabel() {
-  $('create-submit').textContent =
-    createMode() === 'existing' ? 'Add sandbox' : 'Create sandbox';
-}
-
-$('f-sandbox').addEventListener('change', updateSubmitLabel);
-
-for (const radio of document.querySelectorAll('input[name="source"]')) {
-  radio.addEventListener('change', () => {
-    applyMode();
-    if (createMode() === 'existing') loadSbxSandboxes();
-  });
-}
-
-$('f-sandbox-refresh').addEventListener('click', () => loadSbxSandboxes());
-
-// Opening the dialog and switching to "existing" both ask for the list, so
-// loads overlap; only the newest one is allowed to touch the select.
-let sandboxLoad = 0;
-
-// Names this manager already has an entry for, from the last list load. They
-// cannot be added a second time, and the check has to survive the select being
-// bypassed by a keyboard submit.
-let addedSbx = new Set();
-
-// Every sandbox sbx knows about is listed, including ones this manager already
-// has an entry for — those stay visible but unselectable, so it is clear why
-// they are not on offer rather than them simply being missing.
-async function loadSbxSandboxes() {
-  const sel = $('f-sandbox');
-  const hint = $('f-sandbox-hint');
-  const previous = sel.value;
-  const load = ++sandboxLoad;
-
-  let boxes;
-  try {
-    const data = await api('GET', '/api/sbx/sandboxes');
-    boxes = data.sandboxes || [];
-  } catch (err) {
-    if (load !== sandboxLoad) return;
-    sel.textContent = '';
-    sel.disabled = true;
-    hint.textContent = `Could not list sandboxes: ${err.message}`;
-    return;
-  }
-  if (load !== sandboxLoad) return;
-
-  addedSbx = new Set(boxes.filter((b) => b.managed).map((b) => b.name));
-  sel.textContent = '';
-
-  if (boxes.length === 0) {
-    sel.disabled = true;
-    hint.textContent = 'sbx reports no sandboxes at all. Create one under “Create one”.';
-    return;
-  }
-
-  const free = boxes.filter((b) => !b.managed);
-  sel.disabled = free.length === 0;
-  hint.textContent = free.length === 0
-    ? 'Every sandbox sbx knows about is already listed here. Create one under “Create one”.'
-    : 'Takes the sandbox as it is — its agent and workspaces come from the sandbox itself.';
-
-  for (const b of boxes) {
-    const opt = document.createElement('option');
-    opt.value = b.name;
-    opt.disabled = b.managed;
-    const where = (b.workspaces && b.workspaces.length) ? ` · ${shortPath(b.workspaces[0])}` : '';
-    const held = b.managed ? ' · already added' : '';
-    opt.textContent = `${b.name} — ${b.agent || 'unknown agent'} (${b.status})${where}${held}`;
-    sel.append(opt);
-  }
-
-  // A disabled option is still what a select falls back to when it is first
-  // in the list, so the selection is pinned to one that can actually be added
-  // — and cleared outright when none can.
-  sel.value = '';
-  if (free.some((b) => b.name === previous)) sel.value = previous;
-  else if (free.length > 0) sel.value = free[0].name;
-  updateSubmitLabel();
-}
-
-$('create-cancel').addEventListener('click', () => dialog.close());
-
-$('create-submit').addEventListener('click', submitCreate);
-
-$('create-form').addEventListener('keydown', (ev) => {
-  if (ev.key === 'Enter' && ev.target.tagName !== 'TEXTAREA') {
-    ev.preventDefault();
-    submitCreate();
-  }
-});
-
-function lines(id) {
-  return $(id).value.split('\n').map((v) => v.trim()).filter(Boolean);
-}
-
-async function submitCreate() {
-  const form = $('create-form');
-  if (!form.reportValidity()) return;
-
-  const existing = createMode() === 'existing';
-
-  // A disabled select is skipped by form validation, so the empty case needs
-  // its own check.
-  if (existing && !$('f-sandbox').value) {
-    const box = $('create-error');
-    box.textContent = 'Pick a sandbox to add.';
-    box.hidden = false;
-    return;
-  }
-
-  // The list still shows sandboxes this manager has an entry for, and the
-  // server rejects a second one anyway — this says so without the round trip.
-  if (existing && addedSbx.has($('f-sandbox').value)) {
-    const box = $('create-error');
-    box.textContent = 'That sandbox is already listed here.';
-    box.hidden = false;
-    return;
-  }
-
-  const path = existing ? '/api/sandboxes/adopt' : '/api/sandboxes';
-  // Adopting names the sandbox to take over; creating does not name anything
-  // — what a new sandbox is called is the manager's to decide.
-  const body = existing ? {
-    name: $('f-sandbox').value,
-  } : {
-    agent: $('f-agent').value,
-    workspace: $('f-workspace').value.trim(),
-    extraWorkspaces: lines('f-extra'),
-    publish: lines('f-publish'),
-  };
-
-  const btn = $('create-submit');
-  const label = btn.textContent;
-  btn.disabled = true;
-  // Creating pulls an agent image the first time, which is minutes, not
-  // milliseconds.
-  if (!existing) btn.textContent = 'Creating…';
-  try {
-    const created = await api('POST', path, body);
-    dialog.close();
-    await refresh();
-    selectSandbox(created.id);
-  } catch (err) {
-    const box = $('create-error');
-    box.textContent = err.message;
-    box.hidden = false;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
-  }
-}
-
 /* ---------- folder picker ---------- */
 
 // The page cannot learn a real host path from a native file input, so folders
@@ -2107,22 +1774,6 @@ $('browse-path').addEventListener('keydown', (ev) => {
   if (ev.key !== 'Enter') return;
   ev.preventDefault();
   loadDir(ev.target.value.trim());
-});
-
-$('f-workspace-browse').addEventListener('click', () => {
-  openBrowser($('f-workspace').value.trim(), (picked) => {
-    $('f-workspace').value = picked;
-    $('f-workspace').focus();
-  });
-});
-
-$('f-extra-browse').addEventListener('click', () => {
-  const box = $('f-extra');
-  const last = box.value.split('\n').pop().replace(/:ro$/, '').trim();
-  openBrowser(last, (picked) => {
-    box.value = lines('f-extra').concat(picked).join('\n') + '\n';
-    box.focus();
-  });
 });
 
 /* ---------- notifications ---------- */
@@ -2580,16 +2231,14 @@ $('composer-send').addEventListener('click', sendComposed);
 async function loadAgents() {
   try {
     const { agents } = await api('GET', '/api/agents');
-    for (const id of ['f-agent', 'ns-agent']) {
-      const sel = $(id);
-      for (const a of agents) {
-        const opt = document.createElement('option');
-        opt.value = a;
-        opt.textContent = a;
-        sel.append(opt);
-      }
-      sel.value = agents.includes('claude') ? 'claude' : agents[0];
+    const sel = $('ns-agent');
+    for (const a of agents) {
+      const opt = document.createElement('option');
+      opt.value = a;
+      opt.textContent = a;
+      sel.append(opt);
     }
+    sel.value = agents.includes('claude') ? 'claude' : agents[0];
   } catch (err) {
     console.error('load agents:', err);
   }
@@ -2609,7 +2258,6 @@ async function pollHealth() {
 
 (async function init() {
   setNav(false);
-  renderModeChrome();
   ensureTerm();
   renderBrowserNotify();
   loadTelegramSettings();

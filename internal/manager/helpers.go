@@ -8,9 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
-
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
 )
 
 func newID() string {
@@ -19,26 +16,6 @@ func newID() string {
 		panic(err) // crypto/rand failing means the process cannot continue safely
 	}
 	return hex.EncodeToString(b)
-}
-
-// sandboxFromSbx derives a sandbox record from one that already exists. sbx
-// reports workspaces in mount order, so the first one is the agent's working
-// directory and the rest are extra mounts.
-func sandboxFromSbx(box sbx.Sandbox) *Sandbox {
-	now := time.Now()
-	sb := &Sandbox{
-		ID:             newID(),
-		Name:           box.Name,
-		Agent:          box.Agent,
-		Adopted:        true,
-		CreatedAt:      now,
-		LastActivityAt: now,
-	}
-	if len(box.Workspaces) > 0 {
-		sb.Workspace = box.Workspaces[0]
-		sb.ExtraWorkspaces = append([]string(nil), box.Workspaces[1:]...)
-	}
-	return sb
 }
 
 // maxTitle keeps a session title readable in the sidebar. Agent arguments are

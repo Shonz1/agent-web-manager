@@ -28,9 +28,9 @@ type Sandbox struct {
 	// faithfully recreated once it is gone.
 	Adopted bool `json:"adopted,omitempty"`
 
-	// ProjectID is the project this sandbox belongs to, or empty for one made
-	// directly - by "sbx create" outside this manager, or through the
-	// advanced sandbox screen rather than a project.
+	// ProjectID is the project this sandbox belongs to. Empty only for a
+	// sandbox left over from before every sandbox this manager creates
+	// belonged to one, or made directly by "sbx create" outside this manager.
 	ProjectID string `json:"projectId,omitempty"`
 	// IsWorktree marks a sandbox mounted on a worktree of a project's
 	// repository rather than on the project's folder itself. A project has at
