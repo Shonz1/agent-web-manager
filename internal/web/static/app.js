@@ -1474,13 +1474,10 @@ $('session-form').addEventListener('keydown', (ev) => {
 });
 
 function resetSessionForm(p) {
-  const agentRadio = document.querySelector('input[name="ns-kind"][value="agent"]');
-  if (agentRadio) agentRadio.checked = true;
   $('ns-args').value = '';
   $('ns-worktree').checked = false;
   $('ns-branch').value = '';
   $('ns-worktree-path').value = '';
-  applyNsKind();
   applyNsWorktree();
   applyNsAgentField(p);
   $('session-note').textContent = p.mainSandbox
@@ -1502,19 +1499,6 @@ function applyNsAgentField(p) {
   if (!needsPicker && p.mainSandbox) {
     $('ns-agent-fixed').textContent = `Agent: ${p.mainSandbox.agent} — fixed by this project's sandbox.`;
   }
-}
-
-function nsKind() {
-  const picked = document.querySelector('input[name="ns-kind"]:checked');
-  return picked ? picked.value : 'agent';
-}
-
-function applyNsKind() {
-  $('ns-args-line').hidden = nsKind() !== 'agent';
-}
-
-for (const radio of document.querySelectorAll('input[name="ns-kind"]')) {
-  radio.addEventListener('change', applyNsKind);
 }
 
 $('ns-worktree').addEventListener('change', () => {
@@ -1550,14 +1534,15 @@ async function submitSession() {
 
   const worktree = nsWantsWorktree();
   const needsAgent = nsNeedsAgentPicker(p);
-  const kind = nsKind();
   const raw = $('ns-args').value.trim();
   const term = ensureTerm();
   const btn = $('session-submit');
   btn.disabled = true;
   try {
-    const body = { kind, cols: term.cols, rows: term.rows };
-    if (kind === 'agent') body.agentArgs = raw ? raw.split(/\s+/) : [];
+    // Only agents are started from here; a shell is opened beside a session
+    // that is already running, from the session's own Shell button.
+    const body = { kind: 'agent', cols: term.cols, rows: term.rows };
+    body.agentArgs = raw ? raw.split(/\s+/) : [];
     if (needsAgent) body.agent = $('ns-agent').value;
     if (worktree) {
       body.worktree = true;

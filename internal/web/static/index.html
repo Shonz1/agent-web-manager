@@ -271,12 +271,7 @@
     </label>
     <p id="ns-agent-fixed" class="dialog-note" hidden></p>
 
-    <div class="source-toggle" role="radiogroup" aria-label="Session kind">
-      <label><input type="radio" name="ns-kind" value="agent" checked> Agent session</label>
-      <label><input type="radio" name="ns-kind" value="shell"> Shell</label>
-    </div>
-
-    <label id="ns-args-line">
+    <label>
       Agent arguments <span class="optional">space separated</span>
       <input id="ns-args" type="text" placeholder="--continue" autocomplete="off" spellcheck="false">
       <small>Passed to the agent after <code>--</code>.</small>
