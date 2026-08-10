@@ -42,6 +42,38 @@ func TestCreateProjectRoundTrip(t *testing.T) {
 	}
 }
 
+// The UI no longer offers a name box, so a caller that leaves the name to
+// CreateSandbox cannot work a collision around by supplying one of its own:
+// the default has to number itself past whatever is already there. Two
+// projects in folders of the same name are the ordinary way to arrive here.
+func TestUniqueSandboxNameNumbersPastCollisions(t *testing.T) {
+	m, err := New(sbx.New(""), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := m.uniqueSandboxName(defaultName("claude", "/w/app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "claude-app" {
+		t.Fatalf("name = %q, want claude-app while nothing holds it", first)
+	}
+
+	// Registered by hand: CreateSandbox would shell out to sbx.
+	for _, name := range []string{"claude-app", "claude-app-2"} {
+		m.byName[name] = "id-" + name
+	}
+
+	got, err := m.uniqueSandboxName(defaultName("claude", "/other/app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "claude-app-3" {
+		t.Fatalf("name = %q, want claude-app-3", got)
+	}
+}
+
 func TestCreateProjectRequiresNameAndValidPath(t *testing.T) {
 	stateDir := t.TempDir()
 	m, err := New(sbx.New(""), stateDir)

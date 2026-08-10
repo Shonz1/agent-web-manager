@@ -81,6 +81,12 @@
     <div class="panel-body">
       <h3 class="panel-heading">Sessions</h3>
       <ul id="proj-sessions" class="session-cards" aria-label="Sessions in this project"></ul>
+
+      <!-- Sandboxes outlive the sessions inside them: a restart ends every
+           session and leaves every sandbox, so this is where the ones with
+           nothing running in them are seen and removed. -->
+      <h3 class="panel-heading">Sandboxes</h3>
+      <ul id="proj-sandboxes" class="session-cards" aria-label="Sandboxes in this project"></ul>
     </div>
   </section>
 
@@ -338,14 +344,10 @@
                  autocomplete="off" spellcheck="false">
           <button type="button" id="f-workspace-browse" title="Pick a folder">Browse…</button>
         </span>
-        <small>Bind-mounted into the sandbox as the working directory.</small>
-      </label>
-
-      <label>
-        Sandbox name <span class="optional">optional</span>
-        <input id="f-name" type="text" placeholder="claude-my-app" autocomplete="off" spellcheck="false"
-               pattern="[A-Za-z0-9.+\-]+">
-        <small>Letters, numbers, and <code>. + -</code>. Defaults to <code>&lt;agent&gt;-&lt;dir&gt;</code>.</small>
+        <small>
+          Bind-mounted into the sandbox as the working directory. The sandbox is
+          named after it, as <code>&lt;agent&gt;-&lt;dir&gt;</code>.
+        </small>
       </label>
     </div>
 

@@ -398,6 +398,38 @@ body {
 
 .session-cards .empty-hint { padding: 20px 8px; }
 
+/* A second list in the same panel body needs air above it; the first heading
+   sits at the top and must not gain any. */
+.panel-body .panel-heading + .session-cards + .panel-heading { margin-top: 18px; }
+
+/* A sandbox row is a card that opens it plus an action that removes it, so
+   unlike a session card the row itself cannot be the button. */
+.sandbox-row-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.sandbox-row-item .session-card { flex: 1; min-width: 0; }
+.sandbox-row-item .row-action { white-space: nowrap; }
+
+/* The workspace of a sandbox, under its name — the same second line a
+   session card carries, and cut the same way when there is no room. */
+.session-card .card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.session-card .card-text .name { flex: none; }
+.session-card .card-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
 .topbar {
   display: flex;
   align-items: center;

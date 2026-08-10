@@ -247,9 +247,92 @@ func TestStartProjectSessionWorktreeRollsBackWhenTheSandboxFails(t *testing.T) {
 	}
 }
 
+// A sandbox with nothing running in it is exactly what a restart leaves
+// behind — every session ends, every sandbox stays — so the project view has
+// to carry its sandboxes whether or not any session is attached to them.
+// Without this the worktree checkout below could not be found, let alone
+// removed, short of deleting the whole project.
+func TestProjectViewListsSandboxesWithNoSessions(t *testing.T) {
+	projDir := committedRepo(t)
+	stateDir := t.TempDir()
+
+	bootstrap, err := manager.New(sbx.New(""), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: projDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := git.New("").AddWorktree(t.Context(), projDir, "", "feature-x")
+	if err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+
+	// Registered through the state file, as the other sandbox tests here do:
+	// there is no sbx to create one with.
+	sandboxes := []manager.Sandbox{
+		{ID: "wt1", Name: "demo-9f2c", Agent: "claude", Workspace: tree.Path,
+			ProjectID: proj.ID, IsWorktree: true, RepoRoot: tree.RepoRoot},
+		{ID: "main1", Name: "claude-demo", Agent: "claude", Workspace: projDir, ProjectID: proj.ID},
+	}
+	data, err := json.Marshal(sandboxes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "sandboxes.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, err := manager.New(sbx.New(filepath.Join(t.TempDir(), "no-such-sbx")), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{mgr: mgr, git: git.New("")}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+proj.ID, nil)
+	req.SetPathValue("id", proj.ID)
+	rec := httptest.NewRecorder()
+	srv.handleGetProject(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+
+	got := decodeJSON[projectView](t, rec)
+	if len(got.Sessions) != 0 {
+		t.Fatalf("got sessions %+v, want none", got.Sessions)
+	}
+	if len(got.Sandboxes) != 2 {
+		t.Fatalf("got sandboxes %+v, want both of them", got.Sandboxes)
+	}
+	// The project's own sandbox leads, whatever order the manager's map
+	// happened to yield them in.
+	if got.Sandboxes[0].ID != "main1" || got.Sandboxes[1].ID != "wt1" {
+		t.Fatalf("got order %s, %s; want main1 first", got.Sandboxes[0].ID, got.Sandboxes[1].ID)
+	}
+	if got.MainSandbox == nil || got.MainSandbox.ID != "main1" {
+		t.Fatalf("main sandbox = %+v, want main1", got.MainSandbox)
+	}
+
+	wt := got.Sandboxes[1]
+	if !wt.IsWorktree {
+		t.Error("the worktree sandbox is not marked as one, so the UI cannot warn what deleting it removes")
+	}
+	if wt.Workspace != tree.Path {
+		t.Errorf("workspace = %q, want %q", wt.Workspace, tree.Path)
+	}
+	if wt.Branch != "feature-x" {
+		t.Errorf("branch = %q, want feature-x", wt.Branch)
+	}
+	if wt.Sessions != 0 {
+		t.Errorf("sessions = %d, want 0", wt.Sessions)
+	}
+}
+
 // Deleting a project removes every sandbox it owns, including cleaning up
-// the checkout behind a worktree one — the one cleanup DeleteSandbox alone
-// does not do, since only the caller here talks to git.
+// the checkout behind a worktree one — the cleanup the manager's own
+// DeleteSandbox does not do, since only the callers here talk to git.
 func TestDeleteProjectCleansUpWorktrees(t *testing.T) {
 	dir := committedRepo(t)
 	stateDir := t.TempDir()

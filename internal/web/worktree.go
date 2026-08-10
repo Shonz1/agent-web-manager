@@ -29,10 +29,6 @@ type startWorktreeRequest struct {
 	Branch string `json:"branch"`
 	// Path is where the worktree goes. Empty puts it beside the repository.
 	Path string `json:"path"`
-	// Name is what to call the new sandbox. Empty takes the default from
-	// DefaultWorktreeSandboxName: the project's name plus a random slug,
-	// deliberately not the branch — see that function for why.
-	Name string `json:"name"`
 	// NoPlugins starts the new sandbox without the Claude Code plugins the one
 	// it was branched from has.
 	NoPlugins bool `json:"noPlugins"`
@@ -103,13 +99,10 @@ func (s *Server) handleStartWorktreeSession(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
 
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		name = manager.DefaultWorktreeSandboxName(s.worktreeProjectName(sb))
-	}
-
 	created, err := s.mgr.CreateSandbox(manager.CreateSandboxRequest{
-		Name:      name,
+		// Named here rather than by the caller: what a worktree sandbox is
+		// called is this manager's business, not the browser's.
+		Name:      manager.DefaultWorktreeSandboxName(s.worktreeProjectName(sb)),
 		Agent:     sb.Agent,
 		Workspace: tree.Path,
 		// What the source sandbox had, plus the repository the worktree belongs

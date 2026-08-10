@@ -128,7 +128,14 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		return nil, fmt.Errorf("unknown agent %q", req.Agent)
 	}
 	if req.Name == "" {
-		req.Name = defaultName(req.Agent, req.Workspace)
+		// The UI no longer names sandboxes at all, so a default that collides
+		// has nobody left to override it by hand: number it the way session
+		// titles are numbered rather than failing the create.
+		name, err := m.uniqueSandboxName(defaultName(req.Agent, req.Workspace))
+		if err != nil {
+			return nil, err
+		}
+		req.Name = name
 	}
 	if !sbx.ValidName(req.Name) {
 		return nil, fmt.Errorf("invalid sandbox name %q: use letters, numbers, and . + -", req.Name)

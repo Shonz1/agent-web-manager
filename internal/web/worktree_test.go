@@ -143,6 +143,72 @@ func TestWorktreeSessionRollsBackWhenTheSandboxFails(t *testing.T) {
 	}
 }
 
+// Deleting a worktree sandbox on its own takes its checkout with it, the way
+// deleting the whole project does: the directory was made along with the
+// sandbox and there is nothing left to use it for once the sandbox is gone.
+func TestDeleteSandboxRemovesItsWorktree(t *testing.T) {
+	dir := committedRepo(t)
+	tree, err := git.New("").AddWorktree(t.Context(), dir, "", "feature-x")
+	if err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	const id = "wt000002"
+	state := []manager.Sandbox{{
+		ID: id, Name: "demo-9f2c", Agent: "claude", Workspace: tree.Path,
+		IsWorktree: true, RepoRoot: tree.RepoRoot,
+	}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "sandboxes.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := manager.New(sbx.New(filepath.Join(t.TempDir(), "no-such-sbx")), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{mgr: mgr, git: git.New("")}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sandboxes/"+id, nil)
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	srv.handleDeleteSandbox(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (%s)", rec.Code, rec.Body)
+	}
+
+	if _, err := mgr.GetSandbox(id); err == nil {
+		t.Error("the sandbox is still registered")
+	}
+	if _, err := os.Lstat(tree.Path); !os.IsNotExist(err) {
+		t.Fatalf("worktree %s was left behind: %v", tree.Path, err)
+	}
+	if list := worktreeList(t, dir); strings.Contains(list, tree.Path) {
+		t.Fatalf("the repository still lists the worktree:\n%s", list)
+	}
+}
+
+// A plain sandbox's workspace is the user's own directory, mounted into it —
+// deleting the sandbox must not touch it.
+func TestDeleteSandboxLeavesAPlainWorkspaceAlone(t *testing.T) {
+	dir := committedRepo(t)
+	srv, id := worktreeServer(t, dir)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sandboxes/"+id, nil)
+	req.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	srv.handleDeleteSandbox(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (%s)", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
+		t.Fatalf("the workspace was disturbed: %v", err)
+	}
+}
+
 func TestWithRepoMount(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

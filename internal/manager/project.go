@@ -210,12 +210,9 @@ func (m *Manager) EnsureProjectSandbox(ctx context.Context, projectID, agent str
 	if !sbx.ValidAgent(agent) {
 		return nil, fmt.Errorf("unknown agent %q", agent)
 	}
-	name, err := m.uniqueSandboxName(defaultName(agent, p.Path))
-	if err != nil {
-		return nil, err
-	}
+	// Unnamed: CreateSandbox derives "<agent>-<dir>" from the workspace and
+	// numbers it past anything already holding that name.
 	sb, err := m.CreateSandbox(CreateSandboxRequest{
-		Name:      name,
 		Agent:     agent,
 		Workspace: p.Path,
 		ProjectID: p.ID,

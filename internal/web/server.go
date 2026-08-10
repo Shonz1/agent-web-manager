@@ -265,13 +265,31 @@ func (s *Server) handleStopSandbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// handleDeleteSandbox destroys a sandbox and, when it was made for a
+// worktree, the checkout underneath it — the same cleanup deleting a whole
+// project does, because a worktree sandbox and its directory were made by one
+// action and there is nothing left to use the directory for once the sandbox
+// is gone.
 func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	if err := s.mgr.DeleteSandbox(ctx, r.PathValue("id")); err != nil {
+	// Read before deleting: what has to be cleaned up on the host is only on
+	// the record this is about to remove.
+	sb, err := s.mgr.GetSandbox(r.PathValue("id"))
+	if err != nil {
 		writeError(w, statusFor(err), err)
 		return
+	}
+	worktree := sb.IsWorktree
+	path, repoRoot := sb.Workspace, sb.RepoRoot
+
+	if err := s.mgr.DeleteSandbox(ctx, sb.ID); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	if worktree {
+		s.removeWorktree(git.Worktree{Path: path, RepoRoot: repoRoot})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
