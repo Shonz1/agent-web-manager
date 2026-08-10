@@ -624,8 +624,7 @@ function renderSessionPanel(s, b) {
   $('term-meta').textContent = meta;
   $('term-meta').title = meta;
 
-  $('btn-interrupt').disabled = !isLive(s);
-  $('btn-restart').disabled = isLive(s);
+  $('btn-open-pr').disabled = !isLive(s);
 
   // Nothing is left to read the message once the process is gone; the draft
   // stays put, in case the session is restarted.
@@ -1121,15 +1120,17 @@ $('btn-shell').addEventListener('click', () =>
     selectSession(created.id);
   }));
 
-$('btn-interrupt').addEventListener('click', () =>
-  withSession((s) => api('POST', `/api/sessions/${s.id}/interrupt`)));
+// The instruction handed to the agent verbatim: check out of main/master
+// before committing, so "Open PR" never tries to push straight to the
+// branch a repository protects, then open the PR itself.
+const OPEN_PR_PROMPT = 'Check the current git branch. If it is main or master, '
+  + 'create a new branch first. Then commit the outstanding changes with a '
+  + 'clear message and open a pull request for them.';
 
-$('btn-restart').addEventListener('click', () =>
-  withSession(async (s) => {
-    const term = ensureTerm();
-    term.reset();
-    await api('POST', `/api/sessions/${s.id}/restart`, { cols: term.cols, rows: term.rows });
-    connect(s.id);
+$('btn-open-pr').addEventListener('click', () =>
+  withSession((s) => {
+    if (!isLive(s)) return;
+    sendTextToSession(s, OPEN_PR_PROMPT);
   }));
 
 $('btn-close-session').addEventListener('click', () =>
@@ -2516,17 +2517,18 @@ function growComposer() {
   box.style.height = `${box.scrollHeight + border}px`;
 }
 
-function sendComposed() {
-  const box = $('composer-text');
-  const s = selectedSession();
-  if (!box.value.trim() || !s || !isLive(s)) return;
-
+// Delivers text to a session exactly as if it had been typed into the
+// composer and sent: as a paste, with the Return that submits it arriving
+// after the beat a TUI needs to settle. Shared by the composer itself and by
+// anything else that hands a session a whole message at once, such as the
+// "Open PR" button.
+function sendTextToSession(s, text) {
   const sock = state.socket;
   if (!sock) return;
 
   // Return, not newline: that is the byte a terminal sends for the key, and
   // the only one a program reading raw is watching for.
-  const body = box.value.replace(/\r?\n/g, '\r');
+  const body = text.replace(/\r?\n/g, '\r');
   const bracketed = !!(state.term && state.term.modes.bracketedPasteMode);
   sendSocket({ type: 'input', data: bracketed ? PASTE_START + body + PASTE_END : body });
   setTimeout(() => {
@@ -2534,6 +2536,14 @@ function sendComposed() {
     // belongs to the message, not to whatever is attached now.
     if (state.socket === sock) sendSocket({ type: 'input', data: '\r' });
   }, SUBMIT_DELAY);
+}
+
+function sendComposed() {
+  const box = $('composer-text');
+  const s = selectedSession();
+  if (!box.value.trim() || !s || !isLive(s)) return;
+
+  sendTextToSession(s, box.value);
 
   box.value = '';
   drafts.delete(s.id);
