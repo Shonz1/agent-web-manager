@@ -48,6 +48,7 @@ type Manager struct {
 	sandboxes map[string]*Sandbox // by sandbox ID
 	byName    map[string]string   // sandbox name -> sandbox ID
 	sessions  map[string]*Session // by session ID, across all sandboxes
+	projects  map[string]*Project // by project ID
 
 	// Events have a lock of their own. They are emitted from a timer goroutine
 	// that may be holding nothing at all, and sharing mu would put the
@@ -81,9 +82,13 @@ func New(client *sbx.Client, stateDir string) (*Manager, error) {
 		sandboxes: make(map[string]*Sandbox),
 		byName:    make(map[string]string),
 		sessions:  make(map[string]*Session),
+		projects:  make(map[string]*Project),
 		eventSubs: make(map[int]chan Event),
 	}
 	if err := m.load(); err != nil {
+		return nil, err
+	}
+	if err := m.loadProjects(); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -98,6 +103,13 @@ type CreateSandboxRequest struct {
 	Workspace       string   `json:"workspace"`
 	ExtraWorkspaces []string `json:"extraWorkspaces"`
 	Publish         []string `json:"publish"`
+
+	// ProjectID, IsWorktree, and RepoRoot are set by the project session flow
+	// rather than by a caller creating a sandbox directly; see
+	// EnsureProjectSandbox and the worktree session handler.
+	ProjectID  string `json:"projectId,omitempty"`
+	IsWorktree bool   `json:"isWorktree,omitempty"`
+	RepoRoot   string `json:"repoRoot,omitempty"`
 
 	// PluginsFrom names the sandbox whose Claude Code plugins the new one
 	// should be given a copy of. Empty takes them from the machine this
@@ -160,6 +172,9 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		Publish:         req.Publish,
 		CreatedAt:       now,
 		LastActivityAt:  now,
+		ProjectID:       req.ProjectID,
+		IsWorktree:      req.IsWorktree,
+		RepoRoot:        req.RepoRoot,
 	}
 
 	m.mu.Lock()
@@ -171,7 +186,7 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 	m.byName[sb.Name] = sb.ID
 	m.mu.Unlock()
 
-	if err := m.save(); err != nil {
+	if err := m.saveSandboxes(); err != nil {
 		return nil, err
 	}
 
@@ -210,7 +225,7 @@ func (m *Manager) AdoptSandbox(ctx context.Context, name string) (*Sandbox, erro
 	m.byName[sb.Name] = sb.ID
 	m.mu.Unlock()
 
-	if err := m.save(); err != nil {
+	if err := m.saveSandboxes(); err != nil {
 		return nil, err
 	}
 	return sb, nil
@@ -337,7 +352,7 @@ func (m *Manager) DeleteSandbox(ctx context.Context, id string) error {
 	delete(m.byName, sb.Name)
 	m.mu.Unlock()
 
-	return m.save()
+	return m.saveSandboxes()
 }
 
 // --- events ---
@@ -590,13 +605,20 @@ func (m *Manager) dropSession(id string) {
 }
 
 // touchSandboxActivity records that a session in sandboxID just did
-// something. The in-memory record is updated immediately; the write to disk
-// is throttled by scheduleActivitySave.
+// something. The in-memory record is updated immediately, on the sandbox and
+// on the project that owns it, if any; the write to disk is throttled by
+// scheduleActivitySave.
 func (m *Manager) touchSandboxActivity(sandboxID string) {
 	m.mu.Lock()
 	sb, ok := m.sandboxes[sandboxID]
 	if ok {
-		sb.LastActivityAt = time.Now()
+		now := time.Now()
+		sb.LastActivityAt = now
+		if sb.ProjectID != "" {
+			if p, ok := m.projects[sb.ProjectID]; ok {
+				p.LastActivityAt = now
+			}
+		}
 	}
 	m.mu.Unlock()
 	if ok {
@@ -604,7 +626,7 @@ func (m *Manager) touchSandboxActivity(sandboxID string) {
 	}
 }
 
-// scheduleActivitySave persists sandbox state at most once per
+// scheduleActivitySave persists sandbox and project state at most once per
 // activityFlushInterval. A touch that arrives too soon after the last write
 // just marks the state dirty, and it is the next touch — whenever it comes —
 // that flushes it. There is deliberately no timer to do that on its own: a
@@ -621,7 +643,8 @@ func (m *Manager) scheduleActivitySave() {
 	}
 	m.actDirty = false
 	m.actLastSave = time.Now()
-	_ = m.save()
+	_ = m.saveSandboxes()
+	_ = m.saveProjects()
 }
 
 // flushActivity writes out an activity update that scheduleActivitySave held
@@ -631,7 +654,8 @@ func (m *Manager) flushActivity() {
 	m.actDirty = false
 	m.actLastSave = time.Now()
 	m.actMu.Unlock()
-	_ = m.save()
+	_ = m.saveSandboxes()
+	_ = m.saveProjects()
 }
 
 // Shutdown terminates every session. Sandboxes are left running, so they and
@@ -684,7 +708,7 @@ func (m *Manager) legacyStatePath() string {
 	return filepath.Join(m.stateDir, "sessions.json")
 }
 
-func (m *Manager) save() error {
+func (m *Manager) saveSandboxes() error {
 	m.mu.RLock()
 	all := make([]Sandbox, 0, len(m.sandboxes))
 	for _, sb := range m.sandboxes {
@@ -733,7 +757,59 @@ func (m *Manager) load() error {
 	// The legacy file stays where it is; writing the new one is what makes
 	// the migration stick.
 	if path == m.legacyStatePath() {
-		return m.save()
+		return m.saveSandboxes()
+	}
+	return nil
+}
+
+// projectsPath is separate from sandboxes.json: projects are a newer concept
+// than sandboxes, and an install predating them simply has no such file yet.
+func (m *Manager) projectsPath() string {
+	return filepath.Join(m.stateDir, "projects.json")
+}
+
+func (m *Manager) saveProjects() error {
+	m.mu.RLock()
+	all := make([]Project, 0, len(m.projects))
+	for _, p := range m.projects {
+		all = append(all, *p)
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt.Before(all[j].CreatedAt) })
+
+	data, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := m.projectsPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("persist projects: %w", err)
+	}
+	if err := os.Rename(tmp, m.projectsPath()); err != nil {
+		return fmt.Errorf("persist projects: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) loadProjects() error {
+	data, err := os.ReadFile(m.projectsPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read state file %s: %w", m.projectsPath(), err)
+	}
+	var all []Project
+	if err := json.Unmarshal(data, &all); err != nil {
+		return fmt.Errorf("parse project state (%s): %w", m.projectsPath(), err)
+	}
+	for i := range all {
+		p := all[i]
+		if p.LastActivityAt.IsZero() {
+			p.LastActivityAt = p.CreatedAt
+		}
+		m.projects[p.ID] = &p
 	}
 	return nil
 }

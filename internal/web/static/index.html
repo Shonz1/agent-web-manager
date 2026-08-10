@@ -14,15 +14,17 @@
 
 <aside class="sidebar">
   <header class="sidebar-head">
-    <h1>Sandboxes</h1>
+    <h1 id="sidebar-title">Projects</h1>
     <span id="health" class="health" title="sbx status"></span>
   </header>
 
-  <button id="new-sandbox" class="primary block">+ New sandbox</button>
+  <button id="new-project" class="primary block">+ New project</button>
+  <button id="new-sandbox" class="primary block" hidden>+ New sandbox</button>
 
-  <nav id="sandbox-list" class="sandbox-list" aria-label="Sandboxes"></nav>
+  <nav id="sandbox-list" class="sandbox-list" aria-label="Projects"></nav>
 
   <footer class="sidebar-foot">
+    <button id="toggle-advanced" type="button" class="settings-link"></button>
     <button id="open-settings" type="button" class="settings-link"></button>
     <span id="version">agent-web-manager</span>
   </footer>
@@ -31,10 +33,10 @@
 <main class="main">
   <div id="empty" class="empty">
     <div>
-      <h2>No sandbox selected</h2>
-      <p>Create a sandbox, then start agent or shell sessions inside it.</p>
+      <h2 id="empty-title">No project selected</h2>
+      <p id="empty-hint-text">Create a project, then start a session inside it.</p>
       <button type="button" class="menu-btn wide" aria-controls="sandbox-list" aria-expanded="false">
-        ☰ Sandboxes
+        ☰ Projects
       </button>
     </div>
   </div>
@@ -50,7 +52,6 @@
       </div>
       <div class="topbar-actions">
         <button id="btn-start-agent" class="primary" title="Attach the sandbox's agent to a new terminal">Start agent</button>
-        <button id="btn-start-shell" title="Open a shell inside the sandbox">Start shell</button>
         <button id="btn-stop-sandbox" title="End every session and stop the sandbox">Stop</button>
         <button id="btn-delete-sandbox" class="danger" title="Destroy the sandbox permanently">Delete</button>
       </div>
@@ -60,6 +61,26 @@
     <div class="panel-body">
       <h3 class="panel-heading">Sessions</h3>
       <ul id="sb-sessions" class="session-cards" aria-label="Sessions in this sandbox"></ul>
+    </div>
+  </section>
+
+  <section id="project-panel" class="panel" hidden>
+    <header class="topbar">
+      <div class="topbar-main">
+        <button type="button" class="menu-btn" aria-controls="sandbox-list" aria-expanded="false"
+                aria-label="Show projects">☰</button>
+        <h2 id="proj-name"></h2>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-new-session" class="primary" title="Start a session in this project">+ New session</button>
+        <button id="btn-delete-project" class="danger" title="Delete this project permanently">Delete</button>
+      </div>
+    </header>
+    <p id="proj-meta" class="meta"></p>
+
+    <div class="panel-body">
+      <h3 class="panel-heading">Sessions</h3>
+      <ul id="proj-sessions" class="session-cards" aria-label="Sessions in this project"></ul>
     </div>
   </section>
 
@@ -158,6 +179,7 @@
         <button id="term-sandbox" class="badge link-badge" title="Show this sandbox"></button>
       </div>
       <div class="topbar-actions">
+        <button id="btn-terminal" title="Open a shell in this session's sandbox">Terminal</button>
         <button id="btn-interrupt" title="Send Ctrl-C">Interrupt</button>
         <button id="btn-restart" title="Run this session again">Restart</button>
         <button id="btn-close-session" class="danger" title="End this session; the sandbox keeps running">End session</button>
@@ -208,6 +230,90 @@
     </div>
   </section>
 </main>
+
+<dialog id="create-project-dialog">
+  <form id="create-project-form" method="dialog">
+    <h2>New project</h2>
+
+    <label>
+      Name
+      <input id="p-name" type="text" placeholder="My App" required autocomplete="off" spellcheck="false">
+    </label>
+
+    <label>
+      Folder (on this host)
+      <span class="with-button">
+        <input id="p-path" type="text" placeholder="/Users/you/projects/my-app" required
+               autocomplete="off" spellcheck="false">
+        <button type="button" id="p-path-browse" title="Pick a folder">Browse…</button>
+      </span>
+      <small>Bind-mounted into whatever sandboxes this project's sessions run in.</small>
+    </label>
+
+    <p id="create-project-error" class="error" hidden></p>
+
+    <menu>
+      <button type="button" id="create-project-cancel">Cancel</button>
+      <button type="button" id="create-project-submit" class="primary">Create project</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="session-dialog">
+  <form id="session-form" method="dialog">
+    <h2>New session</h2>
+    <p id="session-note" class="dialog-note"></p>
+
+    <label id="ns-agent-line">
+      Agent
+      <select id="ns-agent" required></select>
+      <small>The agent this project's sandbox is built for. Every non-worktree session in this project shares it.</small>
+    </label>
+    <p id="ns-agent-fixed" class="dialog-note" hidden></p>
+
+    <div class="source-toggle" role="radiogroup" aria-label="Session kind">
+      <label><input type="radio" name="ns-kind" value="agent" checked> Agent session</label>
+      <label><input type="radio" name="ns-kind" value="shell"> Shell</label>
+    </div>
+
+    <label id="ns-args-line">
+      Agent arguments <span class="optional">space separated</span>
+      <input id="ns-args" type="text" placeholder="--continue" autocomplete="off" spellcheck="false">
+      <small>Passed to the agent after <code>--</code>.</small>
+    </label>
+
+    <!-- The same session, on a branch and a checkout of its own. A worktree
+         session always gets a fresh sandbox, so it always picks its own agent
+         regardless of whether the project already has a main one. -->
+    <label id="ns-worktree-line" class="check-line">
+      <input id="ns-worktree" type="checkbox">
+      Give this session a git worktree of its own
+    </label>
+
+    <div id="ns-worktree-fields" class="check-fields" hidden>
+      <label>
+        Branch
+        <input id="ns-branch" type="text" placeholder="feature-x" autocomplete="off" spellcheck="false">
+        <small>Checked out in the worktree, and created from where the project stands now if it is new.</small>
+      </label>
+
+      <label>
+        Worktree directory <span class="optional">optional</span>
+        <input id="ns-worktree-path" type="text" autocomplete="off" spellcheck="false">
+        <small>Must not exist yet. Defaults to a folder beside the repository, named after it and the branch.</small>
+      </label>
+
+      <p id="ns-worktree-note" class="dialog-note"></p>
+    </div>
+
+    <p id="session-error" class="error" hidden></p>
+
+    <menu>
+      <button type="button" id="session-cancel">Cancel</button>
+      <button type="button" id="session-submit" class="primary">Start</button>
+    </menu>
+  </form>
+</dialog>
 
 <dialog id="create-dialog">
   <form id="create-form" method="dialog">

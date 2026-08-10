@@ -1,17 +1,26 @@
-/* Agent Web Manager — sandboxes in the sidebar, their sessions attached to a
-   terminal. A sandbox is the durable thing; sessions come and go inside it. */
+/* Agent Web Manager — projects in the sidebar, their sessions attached to a
+   terminal. A project is the durable thing the user works in; the sandbox a
+   session actually runs in is made or reused underneath it and mostly stays
+   out of sight. An "Advanced" mode shows sandboxes directly, for adopting
+   one sbx already knows about or managing one outside any project. */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
 
 const state = {
+  projects: [],
   sandboxes: [],
-  // What the main pane shows: {kind: 'sandbox'|'session', id} or null.
+  // 'projects' is the primary tree; 'sandboxes' is the advanced one. Both
+  // read from the same two lists, which are always kept current regardless
+  // of which is on screen.
+  mode: 'projects',
+  // What the main pane shows: {kind: 'project'|'sandbox'|'session'|'settings', id} or null.
   sel: null,
   term: null,
   fit: null,
   socket: null,
-  listSig: null,
+  sandboxListSig: null,
+  projectListSig: null,
   refit: null,
 };
 
@@ -39,6 +48,10 @@ async function api(method, path, body) {
 
 /* ---------- lookups ---------- */
 
+function findProject(id) {
+  return state.projects.find((p) => p.id === id) || null;
+}
+
 function findSandbox(id) {
   return state.sandboxes.find((b) => b.id === id) || null;
 }
@@ -49,6 +62,10 @@ function findSession(id) {
     if (s) return s;
   }
   return null;
+}
+
+function selectedProject() {
+  return state.sel && state.sel.kind === 'project' ? findProject(state.sel.id) : null;
 }
 
 function selectedSandbox() {
@@ -127,26 +144,66 @@ function sessionTextEl(s) {
   return wrap;
 }
 
+// The project tree has no sandbox row to name a session after, so a session
+// there is named after what it is doing instead — the context line a
+// sandbox-scoped row shows as its subtitle — falling back to the plain title
+// while nothing has been said yet.
+function projectSessionTitle(s) {
+  return sessionSubtitle(s) || sessionLabel(s);
+}
+
+// branch is the project session's own subtitle in place of the context line:
+// which branch it is on says more here than what it is doing, since the tree
+// already names it after that.
+function projectSessionTextEl(s, branch) {
+  const wrap = document.createElement('span');
+  wrap.className = 'session-text';
+
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = projectSessionTitle(s);
+  wrap.append(name);
+
+  if (branch) {
+    const sub = document.createElement('span');
+    sub.className = 'session-sub';
+    sub.textContent = branch;
+    sub.title = branch;
+    wrap.append(sub);
+  }
+  return wrap;
+}
+
 /* ---------- sidebar ---------- */
 
 async function refresh() {
   try {
-    const data = await api('GET', '/api/sandboxes');
-    state.sandboxes = data.sandboxes || [];
+    const [projData, sbData] = await Promise.all([
+      api('GET', '/api/projects'),
+      api('GET', '/api/sandboxes'),
+    ]);
+    state.projects = projData.projects || [];
+    state.sandboxes = sbData.sandboxes || [];
   } catch (err) {
-    console.error('list sandboxes:', err);
+    console.error('list projects/sandboxes:', err);
     return;
   }
-  // A selection can vanish under us: another tab deleted the sandbox, or the
-  // session was ended.
+  // A selection can vanish under us: another tab deleted the project or
+  // sandbox, or the session was ended.
   if (state.sel && !selectionExists(state.sel)) clearSelection();
   renderList();
   renderMain();
 }
 
-// listSignature captures everything renderList draws, so the 5s poll can skip
-// rebuilding the DOM (and dropping hover/focus) when nothing changed.
-function listSignature() {
+function renderList(force) {
+  if (state.mode === 'sandboxes') renderSandboxList(force);
+  else renderProjectList(force);
+}
+
+// sandboxListSignature captures everything renderSandboxList draws, so the 5s
+// poll can skip rebuilding the DOM (and dropping hover/focus) when nothing
+// changed.
+function sandboxListSignature() {
   const parts = state.sandboxes.map((b) => [
     b.id, b.name, b.agent, b.status, b.workspace,
     (b.sessions || []).map((s) => `${s.id}:${s.title}:${sessionSubtitle(s)}:${s.status}:${s.activity || ''}`).join(','),
@@ -155,10 +212,10 @@ function listSignature() {
   return parts.join('|');
 }
 
-function renderList(force) {
-  const sig = listSignature();
-  if (!force && sig === state.listSig) return;
-  state.listSig = sig;
+function renderSandboxList(force) {
+  const sig = sandboxListSignature();
+  if (!force && sig === state.sandboxListSig) return;
+  state.sandboxListSig = sig;
 
   const list = $('sandbox-list');
   list.textContent = '';
@@ -231,6 +288,90 @@ function renderList(force) {
   }
 }
 
+// projectListSignature mirrors sandboxListSignature for the project tree. A
+// project session's row depends on its live counterpart in state.sandboxes as
+// well as on the stub the project view carries (which alone has its branch),
+// so both feed the signature.
+function projectListSignature() {
+  const parts = state.projects.map((p) => {
+    const rows = (p.sessions || []).map((stub) => {
+      const s = findSession(stub.id) || stub;
+      return `${s.id}:${projectSessionTitle(s)}:${stub.branch || ''}:${s.status}:${s.activity || ''}`;
+    });
+    return [p.id, p.name, p.path, rows.join(',')].join(' ');
+  });
+  parts.push(state.sel ? `${state.sel.kind}:${state.sel.id}` : '-');
+  return parts.join('|');
+}
+
+function renderProjectList(force) {
+  const sig = projectListSignature();
+  if (!force && sig === state.projectListSig) return;
+  state.projectListSig = sig;
+
+  const list = $('sandbox-list');
+  list.textContent = '';
+
+  if (state.projects.length === 0) {
+    const hint = document.createElement('p');
+    hint.className = 'empty-hint';
+    hint.textContent = 'No projects yet.';
+    list.append(hint);
+    return;
+  }
+
+  for (const p of state.projects) {
+    const group = document.createElement('div');
+    group.className = 'sandbox-group';
+
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'sandbox-item'
+      + (state.sel && state.sel.kind === 'project' && state.sel.id === p.id ? ' active' : '');
+
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = p.name;
+    row.append(name);
+
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = shortPath(p.path) || p.path;
+    sub.title = p.path || '';
+
+    item.append(row, sub);
+    item.addEventListener('click', () => selectProject(p.id));
+    group.append(item);
+
+    const sessions = p.sessions || [];
+    if (sessions.length) {
+      const rows = document.createElement('div');
+      rows.className = 'session-rows';
+      for (const stub of sessions) {
+        const s = findSession(stub.id) || stub;
+        const srow = document.createElement('button');
+        srow.type = 'button';
+        srow.className = 'session-row'
+          + (state.sel && state.sel.kind === 'session' && state.sel.id === s.id ? ' active' : '');
+
+        const sdot = document.createElement('span');
+        sdot.className = dotClass(s);
+        sdot.title = dotTitle(s);
+
+        srow.append(sdot, projectSessionTextEl(s, stub.branch));
+        srow.addEventListener('click', () => selectSession(s.id));
+        rows.append(srow);
+      }
+      group.append(rows);
+    }
+
+    list.append(group);
+  }
+}
+
 // shortPath keeps the tail of a path, which is the part that identifies a
 // workspace; the full path stays available as a tooltip.
 function shortPath(p) {
@@ -244,18 +385,62 @@ function shortPath(p) {
 
 function renderMain() {
   const settings = !!state.sel && state.sel.kind === 'settings';
+  const project = selectedProject();
   const sandbox = selectedSandbox();
   const session = selectedSession();
 
-  $('empty').hidden = !!sandbox || settings;
+  $('empty').hidden = !!project || !!sandbox || !!session || settings;
   $('settings-panel').hidden = !settings;
-  $('sandbox-panel').hidden = settings || !sandbox || !!session;
+  $('project-panel').hidden = settings || !project || !!session;
+  $('sandbox-panel').hidden = settings || !!project || !sandbox || !!session;
   $('session-panel').hidden = settings || !session;
 
-  if (sandbox && !session) renderSandboxPanel(sandbox);
+  if (project && !session) renderProjectPanel(project);
+  if (sandbox && !session && !project) renderSandboxPanel(sandbox);
   if (session) renderSessionPanel(session, sandbox);
   // Nothing to read the workspace for while the panel holding it is closed.
   if (!session) stopDiffPoll();
+}
+
+function renderProjectPanel(p) {
+  $('proj-name').textContent = p.name;
+  $('proj-meta').textContent = p.path;
+  $('proj-meta').title = p.path;
+
+  const list = $('proj-sessions');
+  list.textContent = '';
+
+  const sessions = p.sessions || [];
+  if (sessions.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'empty-hint';
+    li.textContent = 'No sessions running. Start one to get a terminal.';
+    list.append(li);
+    return;
+  }
+
+  for (const stub of sessions) {
+    const s = findSession(stub.id) || stub;
+    const li = document.createElement('li');
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'session-card';
+
+    const dot = document.createElement('span');
+    dot.className = dotClass(s);
+    dot.title = dotTitle(s);
+
+    const badge = document.createElement('span');
+    badge.className = `badge ${s.status}`;
+    badge.textContent = s.status === 'exited' && s.exitCode
+      ? `exited (${s.exitCode})`
+      : s.status;
+
+    card.append(dot, projectSessionTextEl(s, stub.branch), activityBadge(s), badge);
+    card.addEventListener('click', () => selectSession(s.id));
+    li.append(card);
+    list.append(li);
+  }
 }
 
 function renderSandboxPanel(b) {
@@ -280,7 +465,6 @@ function renderSandboxPanel(b) {
   const gone = b.status === 'missing' && b.adopted;
 
   $('btn-start-agent').disabled = gone;
-  $('btn-start-shell').disabled = gone;
   $('btn-stop-sandbox').disabled = b.status === 'missing';
 
   const list = $('sb-sessions');
@@ -368,24 +552,28 @@ function isLive(s) {
 // back/forward — so that applying a route does not write it back as a new one.
 let applyingRoute = false;
 
+const ROUTE_KIND = { projects: 'project', sandboxes: 'sandbox', sessions: 'session' };
+
 function routeFor(pathname) {
   if (/^\/settings\/?$/.test(pathname)) return { kind: 'settings' };
-  const m = /^\/(sandboxes|sessions)\/([A-Za-z0-9._-]+)\/?$/.exec(pathname);
+  const m = /^\/(projects|sandboxes|sessions)\/([A-Za-z0-9._-]+)\/?$/.exec(pathname);
   if (!m) return null;
-  return { kind: m[1] === 'sandboxes' ? 'sandbox' : 'session', id: m[2] };
+  return { kind: ROUTE_KIND[m[1]], id: m[2] };
 }
 
 function pathFor(sel) {
   if (!sel) return '/';
   if (sel.kind === 'settings') return '/settings';
+  if (sel.kind === 'project') return `/projects/${sel.id}`;
   return sel.kind === 'sandbox' ? `/sandboxes/${sel.id}` : `/sessions/${sel.id}`;
 }
 
 // Settings is the one selection that is not a thing the manager owns, so it
-// cannot go missing the way a sandbox or a session can.
+// cannot go missing the way a project, a sandbox, or a session can.
 function selectionExists(sel) {
   if (!sel) return false;
   if (sel.kind === 'settings') return true;
+  if (sel.kind === 'project') return !!findProject(sel.id);
   return sel.kind === 'sandbox' ? !!findSandbox(sel.id) : !!findSession(sel.id);
 }
 
@@ -399,9 +587,10 @@ function syncURL(replace) {
   history[replace ? 'replaceState' : 'pushState'](null, '', url);
 }
 
-// Points the selection at whatever the URL says. Sandbox ids survive a manager
-// restart but session ids do not, so a route can name something that is not
-// there any more; the URL is then rewritten to what is actually shown.
+// Points the selection at whatever the URL says. Project and sandbox ids
+// survive a manager restart but session ids do not, so a route can name
+// something that is not there any more; the URL is then rewritten to what is
+// actually shown.
 function applyRoute() {
   const route = routeFor(location.pathname);
   const exists = selectionExists(route);
@@ -414,9 +603,18 @@ function applyRoute() {
       renderMain();
     } else if (route.kind === 'settings') {
       selectSettings();
+    } else if (route.kind === 'project') {
+      state.mode = 'projects';
+      selectProject(route.id);
     } else if (route.kind === 'sandbox') {
+      state.mode = 'sandboxes';
       selectSandbox(route.id);
     } else {
+      // A session link does not say which tree it belongs to; a session in a
+      // project's sandbox switches to the project tree, one in a sandbox with
+      // no project switches to the advanced view.
+      const b = findSandbox((findSession(route.id) || {}).sandboxId);
+      if (b) state.mode = b.projectId ? 'projects' : 'sandboxes';
       selectSession(route.id);
     }
   } finally {
@@ -424,6 +622,7 @@ function applyRoute() {
   }
 
   if (!exists) syncURL(true);
+  renderModeChrome();
 }
 
 window.addEventListener('popstate', applyRoute);
@@ -435,6 +634,48 @@ function clearSelection() {
   closeSocket();
   if (state.term) state.term.reset();
   syncURL(true);
+}
+
+/* ---------- mode (projects vs. advanced sandboxes) ---------- */
+
+function setMode(mode) {
+  if (state.mode === mode) return;
+  state.mode = mode;
+  clearSelection();
+  renderModeChrome();
+  renderList(true);
+  renderMain();
+}
+
+function renderModeChrome() {
+  const advanced = state.mode === 'sandboxes';
+  $('sidebar-title').textContent = advanced ? 'Sandboxes' : 'Projects';
+  $('sandbox-list').setAttribute('aria-label', advanced ? 'Sandboxes' : 'Projects');
+  $('new-project').hidden = advanced;
+  $('new-sandbox').hidden = !advanced;
+  $('toggle-advanced').textContent = advanced ? '← Projects' : '🧰 Advanced';
+  $('toggle-advanced').title = advanced
+    ? 'Back to the project tree'
+    : 'Manage sandboxes directly, including adopting ones made outside this manager';
+  $('empty-title').textContent = advanced ? 'No sandbox selected' : 'No project selected';
+  $('empty-hint-text').textContent = advanced
+    ? 'Create a sandbox, then start agent or shell sessions inside it.'
+    : 'Create a project, then start a session inside it.';
+  for (const btn of document.querySelectorAll('.menu-btn.wide')) {
+    btn.textContent = advanced ? '☰ Sandboxes' : '☰ Projects';
+  }
+}
+
+$('toggle-advanced').addEventListener('click', () =>
+  setMode(state.mode === 'sandboxes' ? 'projects' : 'sandboxes'));
+
+function selectProject(id) {
+  state.sel = { kind: 'project', id };
+  closeSocket();
+  setNav(false);
+  syncURL();
+  renderList();
+  renderMain();
 }
 
 function selectSandbox(id) {
@@ -730,15 +971,6 @@ async function withSession(fn, confirmText) {
   await refresh();
 }
 
-$('btn-start-shell').addEventListener('click', () =>
-  withSandbox(async (b) => {
-    const term = ensureTerm();
-    const created = await api('POST', `/api/sandboxes/${b.id}/sessions`,
-      { kind: 'shell', cols: term.cols, rows: term.rows });
-    await refresh();
-    selectSession(created.id);
-  }));
-
 $('btn-stop-sandbox').addEventListener('click', () =>
   withSandbox((b) => api('POST', `/api/sandboxes/${b.id}/stop`),
     'Stop this sandbox? Every session in it ends; the sandbox keeps its state and can be started again.'));
@@ -750,6 +982,18 @@ $('btn-delete-sandbox').addEventListener('click', () =>
   }, 'Delete this sandbox permanently, along with everything inside it? This cannot be undone.'));
 
 /* ---------- session actions ---------- */
+
+// Moved here from the sandbox panel: a terminal is opened in whatever
+// sandbox the session on screen is already running in, rather than asked
+// for up front.
+$('btn-terminal').addEventListener('click', () =>
+  withSession(async (s) => {
+    const term = ensureTerm();
+    const created = await api('POST', `/api/sandboxes/${s.sandboxId}/sessions`,
+      { kind: 'shell', cols: term.cols, rows: term.rows });
+    await refresh();
+    selectSession(created.id);
+  }));
 
 $('btn-interrupt').addEventListener('click', () =>
   withSession((s) => api('POST', `/api/sessions/${s.id}/interrupt`)));
@@ -1128,6 +1372,209 @@ function noteEl(text) {
   p.className = 'diff-empty';
   p.textContent = text;
   return p;
+}
+
+/* ---------- project actions ---------- */
+
+async function withProject(fn, confirmText) {
+  const p = selectedProject();
+  if (!p) return;
+  if (confirmText && !window.confirm(confirmText)) return;
+  try {
+    await fn(p);
+  } catch (err) {
+    window.alert(err.message);
+  }
+  await refresh();
+}
+
+$('btn-delete-project').addEventListener('click', () =>
+  withProject(async (p) => {
+    await api('DELETE', `/api/projects/${p.id}`);
+    clearSelection();
+  }, 'Delete this project permanently, along with every sandbox and session inside it? This cannot be undone.'));
+
+/* ---------- create-project dialog ---------- */
+
+const createProjectDialog = $('create-project-dialog');
+
+$('new-project').addEventListener('click', () => {
+  $('create-project-error').hidden = true;
+  $('p-name').value = '';
+  $('p-path').value = '';
+  createProjectDialog.showModal();
+  $('p-name').focus();
+});
+
+$('create-project-cancel').addEventListener('click', () => createProjectDialog.close());
+$('create-project-submit').addEventListener('click', submitCreateProject);
+
+$('create-project-form').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    submitCreateProject();
+  }
+});
+
+$('p-path-browse').addEventListener('click', () => {
+  openBrowser($('p-path').value.trim(), (picked) => {
+    $('p-path').value = picked;
+    $('p-path').focus();
+  });
+});
+
+async function submitCreateProject() {
+  const form = $('create-project-form');
+  if (!form.reportValidity()) return;
+
+  const btn = $('create-project-submit');
+  btn.disabled = true;
+  try {
+    const created = await api('POST', '/api/projects', {
+      name: $('p-name').value.trim(),
+      path: $('p-path').value.trim(),
+    });
+    createProjectDialog.close();
+    await refresh();
+    selectProject(created.id);
+  } catch (err) {
+    const box = $('create-project-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---------- new-session dialog (project flow) ---------- */
+
+/* The agent picker only matters when a sandbox is about to be made: a
+   project's first non-worktree session, which fixes its main sandbox's
+   agent for every non-worktree session after, or a worktree session, which
+   always gets a sandbox — and so an agent — of its own. */
+
+const sessionDialog = $('session-dialog');
+
+$('btn-new-session').addEventListener('click', () => {
+  const p = selectedProject();
+  if (!p) return;
+  $('session-error').hidden = true;
+  resetSessionForm(p);
+  sessionDialog.showModal();
+});
+
+$('session-cancel').addEventListener('click', () => sessionDialog.close());
+$('session-submit').addEventListener('click', submitSession);
+
+$('session-form').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    submitSession();
+  }
+});
+
+function resetSessionForm(p) {
+  const agentRadio = document.querySelector('input[name="ns-kind"][value="agent"]');
+  if (agentRadio) agentRadio.checked = true;
+  $('ns-args').value = '';
+  $('ns-worktree').checked = false;
+  $('ns-branch').value = '';
+  $('ns-worktree-path').value = '';
+  applyNsKind();
+  applyNsWorktree();
+  applyNsAgentField(p);
+  $('session-note').textContent = p.mainSandbox
+    ? `Runs in ${p.mainSandbox.name} (${p.mainSandbox.agent}) on ${p.path}, unless given a worktree of its own.`
+    : `Starts this project's first sandbox on ${p.path}.`;
+  $('ns-worktree-note').textContent =
+    `Starts the session in a new sandbox on the worktree, with ${p.path} mounted beside it so git keeps working inside.`;
+}
+
+function nsNeedsAgentPicker(p) {
+  return !p.mainSandbox || $('ns-worktree').checked;
+}
+
+function applyNsAgentField(p) {
+  const needsPicker = nsNeedsAgentPicker(p);
+  $('ns-agent-line').hidden = !needsPicker;
+  $('ns-agent').required = needsPicker;
+  $('ns-agent-fixed').hidden = needsPicker;
+  if (!needsPicker && p.mainSandbox) {
+    $('ns-agent-fixed').textContent = `Agent: ${p.mainSandbox.agent} — fixed by this project's sandbox.`;
+  }
+}
+
+function nsKind() {
+  const picked = document.querySelector('input[name="ns-kind"]:checked');
+  return picked ? picked.value : 'agent';
+}
+
+function applyNsKind() {
+  $('ns-args-line').hidden = nsKind() !== 'agent';
+}
+
+for (const radio of document.querySelectorAll('input[name="ns-kind"]')) {
+  radio.addEventListener('change', applyNsKind);
+}
+
+$('ns-worktree').addEventListener('change', () => {
+  applyNsWorktree();
+  const p = selectedProject();
+  if (p) applyNsAgentField(p);
+  if ($('ns-worktree').checked) $('ns-branch').focus();
+});
+
+$('ns-branch').addEventListener('input', showNsDefaultWorktreePath);
+
+function nsWantsWorktree() {
+  return $('ns-worktree').checked;
+}
+
+function applyNsWorktree() {
+  $('ns-worktree-fields').hidden = !nsWantsWorktree();
+  showNsDefaultWorktreePath();
+}
+
+// The placeholder previews where the worktree would go, mirroring
+// git.DefaultWorktreePath the same way the sandbox-scoped dialog's does.
+function showNsDefaultWorktreePath() {
+  const p = selectedProject();
+  const branch = $('ns-branch').value.trim();
+  $('ns-worktree-path').placeholder =
+    p && p.path && branch ? defaultWorktreePath(p.path, branch) : '';
+}
+
+async function submitSession() {
+  const p = selectedProject();
+  if (!p) return;
+
+  const worktree = nsWantsWorktree();
+  const needsAgent = nsNeedsAgentPicker(p);
+  const kind = nsKind();
+  const raw = $('ns-args').value.trim();
+  const term = ensureTerm();
+  const btn = $('session-submit');
+  btn.disabled = true;
+  try {
+    const body = { kind, cols: term.cols, rows: term.rows };
+    if (kind === 'agent') body.agentArgs = raw ? raw.split(/\s+/) : [];
+    if (needsAgent) body.agent = $('ns-agent').value;
+    if (worktree) {
+      body.worktree = true;
+      body.branch = $('ns-branch').value.trim();
+      body.path = $('ns-worktree-path').value.trim();
+    }
+    const { session } = await api('POST', `/api/projects/${p.id}/sessions`, body);
+    sessionDialog.close();
+    await refresh();
+    selectSession(session.id);
+  } catch (err) {
+    const box = $('session-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ---------- start-agent dialog ---------- */
@@ -1916,14 +2363,16 @@ for (const btn of $('term-keys').querySelectorAll('button')) {
 async function loadAgents() {
   try {
     const { agents } = await api('GET', '/api/agents');
-    const sel = $('f-agent');
-    for (const a of agents) {
-      const opt = document.createElement('option');
-      opt.value = a;
-      opt.textContent = a;
-      sel.append(opt);
+    for (const id of ['f-agent', 'ns-agent']) {
+      const sel = $(id);
+      for (const a of agents) {
+        const opt = document.createElement('option');
+        opt.value = a;
+        opt.textContent = a;
+        sel.append(opt);
+      }
+      sel.value = agents.includes('claude') ? 'claude' : agents[0];
     }
-    sel.value = agents.includes('claude') ? 'claude' : agents[0];
   } catch (err) {
     console.error('load agents:', err);
   }
@@ -1943,6 +2392,7 @@ async function pollHealth() {
 
 (async function init() {
   setNav(false);
+  renderModeChrome();
   ensureTerm();
   renderBrowserNotify();
   loadTelegramSettings();
