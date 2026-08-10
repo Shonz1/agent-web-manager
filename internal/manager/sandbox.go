@@ -16,10 +16,12 @@ type Sandbox struct {
 	ExtraWorkspaces []string  `json:"extraWorkspaces,omitempty"`
 	Publish         []string  `json:"publish,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
-	// LastActivityAt is the last time any session in this sandbox did
-	// something — set on creation and bumped as its sessions run, so the
-	// sandbox list can be ordered by what was last used rather than by when it
-	// was made, and that order survives a restart.
+	// LastActivityAt is the last time a person used this sandbox — set on
+	// creation and bumped whenever a session of its is started or typed at, so
+	// the sandbox list can be ordered by what was last used rather than by when
+	// it was made, and that order survives a restart. Work an agent does on its
+	// own does not move it: a list ordered by that would rearrange itself under
+	// whoever is reading it.
 	LastActivityAt time.Time `json:"lastActivityAt"`
 	// Adopted marks a sandbox this manager did not create: its agent and
 	// workspaces were read back from the sandbox itself, so it cannot be

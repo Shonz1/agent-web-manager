@@ -27,9 +27,9 @@ type Project struct {
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
 	CreatedAt time.Time `json:"createdAt"`
-	// LastActivityAt is the last time any session in any of this project's
-	// sandboxes did something — the same idea as Sandbox.LastActivityAt, and
-	// what orders the project list most-recently-used first.
+	// LastActivityAt is the last time a person used any session in any of this
+	// project's sandboxes — the same idea as Sandbox.LastActivityAt, and what
+	// orders the project list most-recently-used first.
 	LastActivityAt time.Time `json:"lastActivityAt"`
 }
 

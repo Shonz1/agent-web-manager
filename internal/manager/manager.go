@@ -445,10 +445,12 @@ func (m *Manager) StartSession(ctx context.Context, sandboxID string, req StartS
 	notifier := newSessionNotifier(m.emit, defaultDwell)
 	s.onActivity = func(sess *Session, prev, next Activity) {
 		notifier.activityChanged(sess, prev, next)
-		// A sandbox's place in the list is when it was last used, not just when
-		// it was made — this is what keeps it current across a restart.
-		m.touchSandboxActivity(sb.ID)
 	}
+	// A sandbox's place in the list is when someone last used it, not just when
+	// it was made — this is what keeps it current across a restart. Only what a
+	// person does counts: an agent left working on its own moves nothing, or
+	// every list would be ordered by which agent talks the most.
+	s.onUserInput = func(*Session) { m.touchSandboxActivity(sb.ID) }
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
 
@@ -611,8 +613,8 @@ func (m *Manager) dropSession(id string) {
 	delete(m.sessions, id)
 }
 
-// touchSandboxActivity records that a session in sandboxID just did
-// something. The in-memory record is updated immediately, on the sandbox and
+// touchSandboxActivity records that a person just used a session in
+// sandboxID. The in-memory record is updated immediately, on the sandbox and
 // on the project that owns it, if any; the write to disk is throttled by
 // scheduleActivitySave.
 func (m *Manager) touchSandboxActivity(sandboxID string) {

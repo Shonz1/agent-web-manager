@@ -63,6 +63,12 @@ type Session struct {
 	// how recently anything was drawn on it; see activity.go.
 	activity   Activity
 	lastOutput time.Time
+	// lastInput is the last time a person did something to this session:
+	// started it, or typed at it. It is deliberately not moved by anything the
+	// agent does on its own — a session left running overnight is not more
+	// recently used than one someone spoke to an hour ago, and it is this that
+	// orders sessions, sandboxes and projects in the UI.
+	lastInput time.Time
 	// quietUntil is when output starts counting as the agent's own again.
 	// Anything drawn before it is the answer to something this manager did —
 	// the echo of a keystroke, the repaint that follows a resize — and none of
@@ -114,6 +120,12 @@ type Session struct {
 	// about; see notify.go. Set once when the session is registered and never
 	// afterwards, so it is safe to read without the lock.
 	onActivity func(s *Session, prev, next Activity)
+
+	// onUserInput is called after someone starts or types at this session, so
+	// that what owns it can record that it was just used. Set once when the
+	// session is registered and never afterwards, so it is safe to read
+	// without the lock.
+	onUserInput func(s *Session)
 }
 
 func newSession(id, sandboxID, sandboxName string, kind Kind, agentArgs []string, title string) *Session {
@@ -126,12 +138,15 @@ func newSession(id, sandboxID, sandboxName string, kind Kind, agentArgs []string
 		Title:       title,
 		AgentArgs:   agentArgs,
 		CreatedAt:   time.Now(),
-		status:      StatusStarting,
-		scroll:      newRingBuffer(scrollbackBytes),
-		screen:      newScreen(int(cols), int(rows)),
-		subs:        make(map[int]chan []byte),
-		watchers:    make(map[int]chan struct{}),
-		done:        make(chan struct{}),
+		// Starting a session is itself something a person did, so it counts as
+		// the first use of it.
+		lastInput: time.Now(),
+		status:    StatusStarting,
+		scroll:    newRingBuffer(scrollbackBytes),
+		screen:    newScreen(int(cols), int(rows)),
+		subs:      make(map[int]chan []byte),
+		watchers:  make(map[int]chan struct{}),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -146,9 +161,9 @@ type SessionView struct {
 	LastCommand string    `json:"lastCommand,omitempty"`
 	AgentArgs   []string  `json:"agentArgs,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
-	// LastActivityAt is the last time this session drew something of its own,
-	// as opposed to the echo of a keystroke or a repaint after a resize. It is
-	// what orders a sandbox's sessions most-recently-active first.
+	// LastActivityAt is the last time a person used this session — started it,
+	// or typed at it. Work the agent does on its own does not move it. It is
+	// what orders a sandbox's sessions most-recently-used first.
 	LastActivityAt time.Time `json:"lastActivityAt"`
 	Status         Status    `json:"status"`
 	// Activity is what a live session looks like it is doing. It is absent for
@@ -174,7 +189,7 @@ func (s *Session) View() SessionView {
 		LastCommand:    s.lastCommand,
 		AgentArgs:      s.AgentArgs,
 		CreatedAt:      s.CreatedAt,
-		LastActivityAt: s.lastOutput,
+		LastActivityAt: s.lastInput,
 		Status:         s.status,
 		Activity:       s.activity,
 		ExitCode:       s.exitCode,
@@ -280,6 +295,8 @@ func (s *Session) start(bin string, argv []string, env []string, cols, rows uint
 	// read idle for its first second would be saying something false.
 	s.activity = ActivityBusy
 	s.lastOutput = time.Now()
+	// Starting a session — including restarting one — is a person using it.
+	s.lastInput = time.Now()
 	s.quietUntil = time.Time{}
 	// The size the process is started at, so the first tab to attach and say
 	// what size it is does not read as a resize.
@@ -293,6 +310,11 @@ func (s *Session) start(bin string, argv []string, env []string, cols, rows uint
 	// or it would report that it had finished something the moment it settled.
 	if s.onActivity != nil {
 		s.onActivity(s, "", ActivityBusy)
+	}
+	// Starting one is the one moment a session has been used before a single
+	// keystroke has been sent to it.
+	if s.onUserInput != nil {
+		s.onUserInput(s)
 	}
 
 	cmd := exec.Command(bin, argv...)
@@ -532,7 +554,19 @@ func (s *Session) Write(p []byte) error {
 	// What comes back next is the echo of this, not the agent at work.
 	s.nudge(echoWindow)
 	s.noteInput(p)
+	s.noteUsed()
 	return nil
+}
+
+// noteUsed records that a person just did something to this session, and tells
+// whatever owns it so the sandbox and project it belongs to move with it.
+func (s *Session) noteUsed() {
+	s.mu.Lock()
+	s.lastInput = time.Now()
+	s.mu.Unlock()
+	if s.onUserInput != nil {
+		s.onUserInput(s)
+	}
 }
 
 // noteInput follows what is being typed at a shell's prompt. Only a shell has
