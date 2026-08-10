@@ -37,10 +37,11 @@ func (c *Client) AddWorktree(ctx context.Context, dir, path, branch string) (Wor
 		return Worktree{}, err
 	}
 
-	root, err := c.root(ctx, dir)
+	info, err := c.probe(ctx, dir)
 	if err != nil {
 		return Worktree{}, err
 	}
+	root := info.Root
 	repoRoot, err := c.mainRoot(ctx, root)
 	if err != nil {
 		return Worktree{}, err
