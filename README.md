@@ -71,8 +71,14 @@ None of them is a flag, on purpose — see [Telegram](#telegram).
 **New sandbox** → **Create one**: pick an agent (`claude`, `codex`, `gemini`,
 `shell`, …) and a host directory to use as the workspace. **Browse…** opens a
 folder picker that walks the host filesystem (git checkouts are tagged), or
-type the path directly — `~` is expanded. Optionally set a sandbox name, extra
-workspaces (append `:ro` for read-only), and published ports.
+type the path directly — `~` is expanded. Optionally set extra workspaces
+(append `:ro` for read-only) and published ports.
+
+The name is not yours to pick: the UI does not offer one, and the manager names
+the sandbox `<agent>-<dir>` after the workspace, numbering it past anything
+already holding that name. A sandbox made for a worktree is named after its
+project and a random slug instead, since a branch name makes neither a good nor
+a unique sandbox name.
 
 This runs `sbx create <agent> --name <name> <workspace>` and nothing else. No
 agent starts yet; the first create for an agent can take minutes while its
@@ -124,11 +130,13 @@ Ticking it does three things, and reports all three:
 
 Both sandboxes then stand on their own: two agents, two branches, two diffs to
 read, and neither able to overwrite the other's files. Deleting the worktree's
-sandbox destroys the container and leaves the checkout — `git worktree remove`
-is how that goes, and it is left to you, because it is the work that was done in
-it. The one time this manager removes a worktree itself is when the sandbox it
-was made for could not be created, since a directory left behind would only make
-the next attempt at the same branch fail.
+sandbox destroys the container *and* runs `git worktree remove` on the checkout
+under it: the directory was made along with the sandbox and there is nothing
+left to use it for once the sandbox is gone. Anything committed there and never
+pushed goes with it, which is what the confirmation says before it happens. A
+worktree is also removed when the sandbox it was made for could not be created
+in the first place, since a directory left behind would only make the next
+attempt at the same branch fail.
 
 ### Session names
 
@@ -447,12 +455,15 @@ so rather than reporting an error.
 - **End session** kills that terminal and leaves everything else alone.
 - **Stop** (sandbox) ends every session in it and stops the container, keeping
   its state.
-- **Delete** (sandbox) destroys the container permanently.
+- **Delete** (sandbox) destroys the container permanently, along with the
+  worktree checkout under it if it was made for one.
 
 Sandboxes are persisted, so restarting the manager keeps them listed. Sessions
 are not: a session is a live process with a PTY behind it, and there is nothing
 left of one after the manager exits — start them again in the sandbox that came
-back. Multiple browser tabs can attach to the same session and see the same
+back. A project's panel lists its sandboxes as well as its sessions, which is
+what makes the ones a restart left with nothing running in them visible, and
+deletable, rather than reachable only by deleting the whole project. Multiple browser tabs can attach to the same session and see the same
 output. Each session keeps 256 KB of scrollback so a tab that attaches late
 still sees the current screen.
 
@@ -500,7 +511,7 @@ reaches it with the tab closed.
 | `POST` | `/api/sandboxes/adopt` | Take over a sandbox that already exists |
 | `GET` | `/api/sandboxes/{id}` | One sandbox |
 | `POST` | `/api/sandboxes/{id}/stop` | End its sessions and stop it |
-| `DELETE` | `/api/sandboxes/{id}` | Destroy it permanently |
+| `DELETE` | `/api/sandboxes/{id}` | Destroy it permanently, with its worktree checkout if it has one |
 | `POST` | `/api/sandboxes/{id}/sessions` | Start a session inside it |
 | `POST` | `/api/sandboxes/{id}/worktree` | Add a worktree of its workspace, mount a sandbox on it, and start a session in there |
 | `GET` | `/api/sandboxes/{id}/diff` | Changed files in its workspace; `?base=head` (default) or `branch` |

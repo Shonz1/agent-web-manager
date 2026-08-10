@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,24 +29,34 @@ type projectSessionView struct {
 	IsWorktree bool   `json:"isWorktree,omitempty"`
 }
 
-// sandboxSummary is as much of a sandbox as the project view exposes: enough
-// for the "new session" dialog to say whether a project already has a main
-// sandbox and, if so, what agent it is fixed to.
+// sandboxSummary is as much of a sandbox as the project view exposes:
+// enough for the "new session" dialog to say whether a project already has a
+// main sandbox and what agent it is fixed to, and enough for the project
+// panel to list the sandboxes themselves — which is the only place a sandbox
+// left behind by a session that has since ended can be seen, and removed.
 type sandboxSummary struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Agent  string `json:"agent"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Agent      string `json:"agent"`
+	Status     string `json:"status"`
+	Workspace  string `json:"workspace,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	IsWorktree bool   `json:"isWorktree,omitempty"`
+	// Sessions counts what is running in the sandbox right now, which is what
+	// says whether removing it would take a live terminal with it.
+	Sessions int `json:"sessions"`
 }
 
 // projectView answers a project request with its sessions decorated by
-// branch, in place of the sandboxes manager.ProjectView carries them in —
-// the project tree has no use for the sandboxes themselves, only for what
-// is running in them and, for the main one, what agent a new non-worktree
-// session would join.
+// branch, and its sandboxes summarised. Sessions are what the project tree
+// shows; the sandboxes are there because they outlive every session in them
+// — a manager restart ends the sessions and leaves the sandboxes — and
+// without them a worktree sandbox would be invisible from the moment its
+// session ended.
 type projectView struct {
 	manager.Project
 	MainSandbox *sandboxSummary      `json:"mainSandbox,omitempty"`
+	Sandboxes   []sandboxSummary     `json:"sandboxes"`
 	Sessions    []projectSessionView `json:"sessions"`
 }
 
@@ -70,12 +81,39 @@ func decorateProject(ctx context.Context, g *git.Client, v manager.ProjectView) 
 		return b
 	}
 
-	out := projectView{Project: v.Project, Sessions: make([]projectSessionView, 0, len(v.Sessions))}
-	for _, sb := range v.Sandboxes {
-		if sb.IsWorktree {
+	out := projectView{
+		Project:   v.Project,
+		Sandboxes: make([]sandboxSummary, 0, len(v.Sandboxes)),
+		Sessions:  make([]projectSessionView, 0, len(v.Sessions)),
+	}
+	// The manager holds its sandboxes in a map, so an order has to be put on
+	// them here: the project's own sandbox first — it is the one every plain
+	// session shares — then the worktrees, most recently used first.
+	boxes := append([]manager.SandboxView(nil), v.Sandboxes...)
+	sort.SliceStable(boxes, func(i, j int) bool {
+		if boxes[i].IsWorktree != boxes[j].IsWorktree {
+			return !boxes[i].IsWorktree
+		}
+		return boxes[i].LastActivityAt.After(boxes[j].LastActivityAt)
+	})
+	for _, sb := range boxes {
+		out.Sandboxes = append(out.Sandboxes, sandboxSummary{
+			ID:         sb.ID,
+			Name:       sb.Name,
+			Agent:      sb.Agent,
+			Status:     sb.Status,
+			Workspace:  sb.Workspace,
+			Branch:     branchFor(sb.Workspace),
+			IsWorktree: sb.IsWorktree,
+			Sessions:   len(sb.Sessions),
+		})
+	}
+	for i := range out.Sandboxes {
+		if out.Sandboxes[i].IsWorktree {
 			continue
 		}
-		out.MainSandbox = &sandboxSummary{ID: sb.ID, Name: sb.Name, Agent: sb.Agent, Status: sb.Status}
+		main := out.Sandboxes[i]
+		out.MainSandbox = &main
 		break
 	}
 	for _, sess := range v.Sessions {
@@ -169,10 +207,6 @@ type startProjectSessionRequest struct {
 	Branch   string `json:"branch"`
 	// Path is where the worktree goes. Empty puts it beside the repository.
 	Path string `json:"path"`
-	// Name overrides a new worktree sandbox's default name. Ignored outside
-	// the worktree case: the project's main sandbox already has whatever
-	// name it was given when it was made.
-	Name string `json:"name"`
 }
 
 // startProjectSessionResponse reports what starting a project session made:
@@ -269,7 +303,9 @@ func (s *Server) startWorktreeProjectSession(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	created, err := s.mgr.CreateSandbox(manager.CreateSandboxRequest{
-		Name:      strings.TrimSpace(req.Name),
+		// Named after the project plus a random slug, never after the branch
+		// or by the browser — see manager.DefaultWorktreeSandboxName.
+		Name:      manager.DefaultWorktreeSandboxName(proj.Name),
 		Agent:     agent,
 		Workspace: tree.Path,
 		// The repository the worktree belongs to, so the agent has git at

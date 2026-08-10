@@ -35,8 +35,8 @@ type Sandbox struct {
 	// most one sandbox that is not one of these; see EnsureProjectSandbox.
 	IsWorktree bool `json:"isWorktree,omitempty"`
 	// RepoRoot is the main working tree the IsWorktree checkout belongs to, so
-	// its worktree can be removed from git when this sandbox is deleted along
-	// with its project. Empty when IsWorktree is false.
+	// its worktree can be removed from git when this sandbox is deleted —
+	// on its own or along with its project. Empty when IsWorktree is false.
 	RepoRoot string `json:"repoRoot,omitempty"`
 }
 

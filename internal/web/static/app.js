@@ -407,6 +407,8 @@ function renderProjectPanel(p) {
   $('proj-meta').textContent = p.path;
   $('proj-meta').title = p.path;
 
+  renderProjectSandboxes(p);
+
   const list = $('proj-sessions');
   list.textContent = '';
 
@@ -441,6 +443,95 @@ function renderProjectPanel(p) {
     li.append(card);
     list.append(li);
   }
+}
+
+/* The sandboxes a project's sessions run in. They are an implementation
+   detail while a session is attached to them — the tree shows the session
+   instead — but they outlive every session inside them: a manager restart
+   ends the sessions and leaves the sandboxes standing. Without this list a
+   worktree sandbox, and the checkout under it, would be invisible from the
+   moment its session ended, with nothing short of deleting the whole project
+   to get rid of it. */
+function renderProjectSandboxes(p) {
+  const list = $('proj-sandboxes');
+  list.textContent = '';
+
+  const boxes = p.sandboxes || [];
+  if (boxes.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'empty-hint';
+    li.textContent = 'No sandboxes yet. Starting a session makes one.';
+    list.append(li);
+    return;
+  }
+
+  for (const b of boxes) {
+    const li = document.createElement('li');
+    li.className = 'sandbox-row-item';
+
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'session-card';
+    card.title = 'Show this sandbox';
+
+    const dot = document.createElement('span');
+    dot.className = `dot sandbox-${b.status}`;
+    dot.title = `sandbox ${b.status}`;
+
+    const text = document.createElement('span');
+    text.className = 'card-text';
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = b.name;
+
+    const sub = document.createElement('span');
+    sub.className = 'card-sub';
+    sub.textContent = sandboxSubtitle(b);
+    sub.title = b.workspace || '';
+    text.append(name, sub);
+
+    const agent = document.createElement('span');
+    agent.className = 'badge subtle';
+    agent.textContent = b.agent || 'unknown';
+
+    const status = document.createElement('span');
+    status.className = `badge sandbox-${b.status}`;
+    status.textContent = b.status;
+
+    card.append(dot, text, sessionCountBadge(b.sessions), agent, status);
+    card.addEventListener('click', () => selectSandbox(b.id));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'danger row-action';
+    del.textContent = 'Delete';
+    del.title = 'Destroy this sandbox permanently';
+    del.addEventListener('click', () => deleteSandbox(b));
+
+    li.append(card, del);
+    list.append(li);
+  }
+}
+
+// A sandbox's second line: what makes it different from the project's other
+// ones — the branch it is on — and where it is mounted.
+function sandboxSubtitle(b) {
+  const bits = [];
+  if (b.isWorktree) bits.push('worktree');
+  if (b.branch) bits.push(b.branch);
+  bits.push(shortPath(b.workspace) || 'no workspace mount');
+  return bits.join(' · ');
+}
+
+// Says whether deleting the sandbox would take a running terminal with it. A
+// sandbox with nothing in it contributes no chip rather than an empty one.
+function sessionCountBadge(n) {
+  if (!n) return document.createDocumentFragment();
+  const el = document.createElement('span');
+  el.className = 'badge running';
+  el.textContent = n === 1 ? '1 session' : `${n} sessions`;
+  return el;
 }
 
 function renderSandboxPanel(b) {
@@ -975,11 +1066,35 @@ $('btn-stop-sandbox').addEventListener('click', () =>
   withSandbox((b) => api('POST', `/api/sandboxes/${b.id}/stop`),
     'Stop this sandbox? Every session in it ends; the sandbox keeps its state and can be started again.'));
 
-$('btn-delete-sandbox').addEventListener('click', () =>
-  withSandbox(async (b) => {
+$('btn-delete-sandbox').addEventListener('click', () => {
+  const b = selectedSandbox();
+  if (b) deleteSandbox(b);
+});
+
+// Shared by the sandbox panel's own button and the rows in the project panel,
+// so a sandbox is removed — and warned about — the same way wherever it is
+// deleted from.
+async function deleteSandbox(b) {
+  if (!window.confirm(sandboxDeletePrompt(b))) return;
+  try {
     await api('DELETE', `/api/sandboxes/${b.id}`);
-    clearSelection();
-  }, 'Delete this sandbox permanently, along with everything inside it? This cannot be undone.'));
+    if (state.sel && state.sel.kind === 'sandbox' && state.sel.id === b.id) clearSelection();
+  } catch (err) {
+    window.alert(err.message);
+  }
+  await refresh();
+}
+
+// What the delete actually takes with it. A worktree sandbox owns its
+// checkout — the directory was made along with the sandbox — and the server
+// removes both, which is worth saying before it happens.
+function sandboxDeletePrompt(b) {
+  if (b.isWorktree) {
+    return `Delete ${b.name} permanently, along with its worktree checkout at ${b.workspace}?`
+      + ' Anything committed there and never pushed goes with it. This cannot be undone.';
+  }
+  return `Delete ${b.name} permanently, along with everything inside it? This cannot be undone.`;
+}
 
 /* ---------- session actions ---------- */
 
@@ -1842,12 +1957,13 @@ async function submitCreate() {
   }
 
   const path = existing ? '/api/sandboxes/adopt' : '/api/sandboxes';
+  // Adopting names the sandbox to take over; creating does not name anything
+  // — what a new sandbox is called is the manager's to decide.
   const body = existing ? {
     name: $('f-sandbox').value,
   } : {
     agent: $('f-agent').value,
     workspace: $('f-workspace').value.trim(),
-    name: $('f-name').value.trim(),
     extraWorkspaces: lines('f-extra'),
     publish: lines('f-publish'),
   };
@@ -1861,7 +1977,6 @@ async function submitCreate() {
   try {
     const created = await api('POST', path, body);
     dialog.close();
-    $('f-name').value = '';
     await refresh();
     selectSandbox(created.id);
   } catch (err) {
