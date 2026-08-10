@@ -37,6 +37,7 @@ func run() error {
 		sbxBin   = flag.String("sbx", "sbx", "path to the sbx binary")
 		gitBin   = flag.String("git", "git", "path to the git binary, used to read a workspace's changes")
 		stateDir = flag.String("state-dir", defaultStateDir(), "directory for persisted sandbox state")
+		kitsDir  = flag.String("kits-dir", sbx.DefaultKitsDir(), "directory of sbx kits a session can be started with")
 		showVer  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -56,7 +57,7 @@ func run() error {
 		log.Printf("warning: sbx is not usable yet: %v", err)
 	}
 
-	mgr, err := manager.New(client, *stateDir)
+	mgr, err := manager.New(client, *stateDir, manager.WithKitsDir(*kitsDir))
 	if err != nil {
 		return err
 	}

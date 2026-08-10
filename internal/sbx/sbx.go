@@ -109,6 +109,11 @@ type CreateOptions struct {
 	// the host until someone fetches from the sandbox, which is what makes
 	// several sandboxes on one folder safe to run at once.
 	Clone bool
+	// Kits are the kits to apply, as "--kit" takes them: a path here, since
+	// the manager only offers the ones already on this machine. Several stack,
+	// in the order given. See kits.go — and note that sbx accepts these on a
+	// create alone, which is why nothing adds one to a sandbox afterwards.
+	Kits []string
 }
 
 // Create makes a sandbox and returns once it exists, without attaching to it.
@@ -128,6 +133,9 @@ func CreateArgs(opts CreateOptions) []string {
 	}
 	for _, p := range opts.Publish {
 		args = append(args, "--publish", p)
+	}
+	for _, k := range opts.Kits {
+		args = append(args, "--kit", k)
 	}
 	args = append(args, opts.Agent)
 	if opts.Workspace != "" {

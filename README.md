@@ -47,6 +47,7 @@ Then open <http://127.0.0.1:7788>.
 | `-sbx` | `sbx` | Path to the `sbx` binary |
 | `-git` | `git` | Path to the `git` binary, used to read a workspace's changes |
 | `-state-dir` | `~/Library/Application Support/agent-web-manager` (macOS) | Where sandbox records are persisted |
+| `-kits-dir` | `~/.sbx/kits` | Where [sbx kits](#kits) are looked for |
 | `-version` | | Print version and exit |
 
 ### Environment
@@ -118,7 +119,8 @@ another agent, which has no Claude Code in it to install a plugin with.
 ### 2. Start sessions in it
 
 **+ New session**, inside the project: any arguments to pass the agent after
-`--`, and that is it — the agent was chosen with the project.
+`--`, whichever [kits](#kits) the session should be built with, and that is it
+— the agent was chosen with the project.
 
 Each session gets a sandbox of its own, cloned from the base one and created
 in sbx's **clone mode** (`sbx create --clone …`): its workspace is a standalone
@@ -186,6 +188,41 @@ pushed goes with it, which is what the confirmation says before it happens. A
 worktree is also removed when the sandbox it was made for could not be created
 in the first place, since a directory left behind would only make the next
 attempt at the same branch fail.
+
+### Kits
+
+A [kit](https://docs.docker.com/ai/sandboxes/customize/kits/) is sbx's own way
+of giving a sandbox more than its agent image came with: network policy,
+credentials, environment, files, setup commands, and instructions for the
+agent, written down in one directory and applied with `sbx create --kit`.
+
+**New session** lists the kits installed on this machine — every directory
+holding a `spec.yaml`, and every `.zip`, under `~/.sbx/kits` (or wherever
+`-kits-dir` points). Tick as many as you want; they stack in the order the
+dialog shows them, and each becomes one `--kit` on the create:
+
+```bash
+sbx create --name <sandbox> --clone --kit ~/.sbx/kits/vale claude <path>
+```
+
+The kits are chosen with the session rather than with the project because sbx
+only accepts them while a sandbox is being made, and a session's sandbox is
+made by that one request — a clone or a worktree, either way. Nothing adds a
+kit to a sandbox that already exists, so a session already running cannot be
+given one; start another. Which kits a sandbox was built with is on its second
+line in the project's sandbox list, and is kept with its record: a sandbox sbx
+has lost and the manager rebuilds is created with them again, rather than
+coming back under the same name without the policy and tools it was asked for.
+If one of them has been uninstalled by then, the rebuild stops and says so.
+
+The browser names a kit; it never names a path. What a name resolves to is
+decided here, against what is actually in the kits folder — a kit can install
+software and open holes in a sandbox's network policy, so a request cannot
+point `--kit` at an arbitrary directory. A name that is not in the listing is
+refused before anything is created.
+
+A machine with no kits folder is the ordinary case: nothing about the dialog
+changes, and the section is simply not there.
 
 ### Session names
 
@@ -582,6 +619,7 @@ reaches it with the tab closed.
 | --- | --- | --- |
 | `GET` | `/api/health` | Whether `sbx` is usable |
 | `GET` | `/api/agents` | Agents `sbx` can launch |
+| `GET` | `/api/kits` | [Kits](#kits) installed on this machine, and the folder they came from |
 | `GET` | `/api/fs/dirs` | Sub-directories of `?path=` for the folder picker |
 | `GET` | `/api/events` | Server-sent stream of `attention` and `done` events |
 | `GET` | `/api/settings/telegram` | Notification settings, never including the token |
@@ -592,7 +630,7 @@ reaches it with the tab closed.
 | `POST` | `/api/projects` | Create a project |
 | `GET` | `/api/projects/{id}` | One project |
 | `DELETE` | `/api/projects/{id}` | Delete it, along with every sandbox and session inside it |
-| `POST` | `/api/projects/{id}/sessions` | Start a session in it — in a clone of its base sandbox, or on a worktree |
+| `POST` | `/api/projects/{id}/sessions` | Start a session in it — in a clone of its base sandbox, or on a worktree; `kits` names the ones to build it with |
 | `GET` | `/api/projects/{id}/model` | The model its next session comes up on, read from its base sandbox |
 | `PUT` | `/api/projects/{id}/model` | Set it; an empty `model` leaves the sandbox on its default |
 | `PUT` | `/api/projects/{id}/plugins` | Whether the sandboxes it makes are given the base sandbox's plugins |

@@ -9,6 +9,11 @@ const $ = (id) => document.getElementById(id);
 const state = {
   projects: [],
   sandboxes: [],
+  // The sbx kits installed on this machine, and the folder they came from —
+  // read at startup and again whenever the new-session dialog opens, since a
+  // kit dropped into that folder should be there to pick without a reload.
+  kits: [],
+  kitsDir: '',
   // What the main pane shows: {kind: 'project'|'sandbox'|'session'|'settings', id} or null.
   sel: null,
   term: null,
@@ -553,6 +558,9 @@ function sandboxSubtitle(b) {
   if (b.clone) bits.push('clone');
   if (b.isWorktree) bits.push('worktree');
   if (b.branch) bits.push(b.branch);
+  // Kits went on when the sandbox was made and cannot be changed now, so this
+  // is the only place what a session was given can be read back.
+  if (b.kits && b.kits.length) bits.push(`kit ${b.kits.join(', ')}`);
   bits.push(shortPath(b.workspace) || 'no workspace mount');
   return bits.join(' · ');
 }
@@ -1669,6 +1677,10 @@ function openSessionDialog(p) {
   $('session-error').hidden = true;
   resetSessionForm(p);
   sessionDialog.showModal();
+  // The kits on this machine are whatever is in the folder now, not what was
+  // there when the page loaded. Re-read them behind the open dialog: the list
+  // already on screen is right in every case but the one where it isn't.
+  refreshKits();
 }
 
 $('btn-new-session').addEventListener('click', () => {
@@ -1689,6 +1701,7 @@ $('session-form').addEventListener('keydown', (ev) => {
 
 function resetSessionForm(p) {
   $('ns-args').value = '';
+  renderSessionKits(false);
   $('ns-worktree').checked = false;
   $('ns-branch').value = '';
   $('ns-worktree-path').value = '';
@@ -1717,6 +1730,66 @@ function sessionNote(p) {
   }
   return `Runs in a new sandbox holding a clone of ${p.path}, made from ${p.baseSandbox.name}.`
     + ' Nothing it does reaches this machine until you fetch it.';
+}
+
+/* A kit is applied by "sbx create" and cannot be added to a sandbox that
+   already exists, so this is the only moment it can be chosen: the session's
+   sandbox is made by the request this dialog sends. A machine with no kits
+   installed is shown nothing at all rather than an empty list. */
+
+function renderSessionKits(keepChosen) {
+  const box = $('ns-kits');
+  const chosen = new Set(keepChosen ? selectedKits() : []);
+  box.replaceChildren();
+  for (const kit of state.kits) {
+    box.append(kitLine(kit, chosen.has(kit.name)));
+  }
+  $('ns-kits-line').hidden = state.kits.length === 0;
+  $('ns-kits-note').textContent = state.kits.length
+    ? `From ${state.kitsDir}, applied as the session's sandbox is made — a kit cannot be added to one afterwards.`
+    : '';
+}
+
+function kitLine(kit, checked) {
+  const line = document.createElement('label');
+  line.className = 'check-line kit-line';
+
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  // The name, never the path: it is what the manager resolves against the
+  // kits it can actually see, and the only thing it accepts.
+  box.value = kit.name;
+  box.checked = checked;
+  line.append(box);
+
+  const text = document.createElement('span');
+  const name = document.createElement('span');
+  name.className = 'kit-name';
+  name.textContent = kit.displayName || kit.name;
+  text.append(name);
+  // What it is for, when the kit's spec says — and what it is called on disk,
+  // when that is not already the name shown.
+  const said = [kit.description, kit.displayName && kit.displayName !== kit.name ? kit.name : ''];
+  const note = said.filter(Boolean).join(' · ');
+  if (note) {
+    const small = document.createElement('small');
+    small.textContent = note;
+    text.append(small);
+  }
+  line.append(text);
+  return line;
+}
+
+function selectedKits() {
+  return [...$('ns-kits').querySelectorAll('input:checked')].map((el) => el.value);
+}
+
+// Re-reads the kits folder and redraws the list, keeping whatever has already
+// been ticked: this lands behind an open dialog, and must not undo a choice
+// made while it was in flight.
+async function refreshKits() {
+  await loadKits();
+  if (sessionDialog.open) renderSessionKits(true);
 }
 
 $('ns-worktree').addEventListener('change', () => {
@@ -1758,6 +1831,8 @@ async function submitSession() {
     // that is already running, from the session's own Shell button.
     const body = { kind: 'agent', cols: term.cols, rows: term.rows };
     body.agentArgs = raw ? raw.split(/\s+/) : [];
+    const kits = selectedKits();
+    if (kits.length) body.kits = kits;
     if (worktree) {
       body.worktree = true;
       body.branch = $('ns-branch').value.trim();
@@ -2577,6 +2652,20 @@ async function loadAgents() {
   }
 }
 
+// The kits this machine has to offer. A folder that cannot be read is
+// reported by the server as no kits and a reason: the dialog it feeds is for
+// starting a session, and must not be held up by a kits folder.
+async function loadKits() {
+  try {
+    const { kits, dir, error } = await api('GET', '/api/kits');
+    state.kits = kits || [];
+    state.kitsDir = dir || '';
+    if (error) console.error('list kits:', error);
+  } catch (err) {
+    console.error('load kits:', err);
+  }
+}
+
 async function pollHealth() {
   const el = $('health');
   try {
@@ -2596,6 +2685,7 @@ async function pollHealth() {
   loadTelegramSettings();
   connectEvents();
   await loadAgents();
+  await loadKits();
   await refresh();
   // Only once the sandboxes are in can the URL be resolved to a selection.
   applyRoute();

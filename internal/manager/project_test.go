@@ -356,7 +356,7 @@ func TestCreateSessionSandboxClonesTheBase(t *testing.T) {
 	m.sandboxes[base.ID] = base
 	m.byName[base.Name] = base.ID
 
-	sb, err := m.CreateSessionSandbox(context.Background(), p.ID, true)
+	sb, err := m.CreateSessionSandbox(context.Background(), p.ID, true, nil)
 	if err != nil {
 		t.Fatalf("CreateSessionSandbox: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestCreateSessionSandboxClonesTheBase(t *testing.T) {
 	}
 	// Each session gets another: they are what keeps two sessions in one
 	// project out of each other's way.
-	second, err := m.CreateSessionSandbox(context.Background(), p.ID, true)
+	second, err := m.CreateSessionSandbox(context.Background(), p.ID, true, nil)
 	if err != nil {
 		t.Fatalf("second CreateSessionSandbox: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestCreateSessionSandboxClonesTheBase(t *testing.T) {
 
 	// A project folder that is not a checkout has nothing to clone, and the
 	// session is mounted on the folder itself rather than refused.
-	plain, err := m.CreateSessionSandbox(context.Background(), p.ID, false)
+	plain, err := m.CreateSessionSandbox(context.Background(), p.ID, false, nil)
 	if err != nil {
 		t.Fatalf("CreateSessionSandbox without a repo: %v", err)
 	}

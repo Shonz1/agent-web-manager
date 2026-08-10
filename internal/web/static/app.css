@@ -1012,6 +1012,25 @@ dialog menu {
   accent-color: var(--accent);
 }
 
+/* A heading for a group of check-lines, matching the labels the rest of the
+   form stacks above its inputs. */
+.group-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* A kit says what it is under its own name, so its row runs to two lines and
+   the checkbox sits against the first one rather than the middle of both. */
+.kit-line {
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.kit-line input { margin-top: 2px; }
+.kit-line .kit-name { color: var(--text); font-weight: 500; }
+.kit-line small { margin-top: 2px; }
+
 /* Fields that only exist because a check-line above them is ticked, drawn as
    hanging off it rather than as more of the form. */
 .check-fields {

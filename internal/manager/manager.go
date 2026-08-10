@@ -56,6 +56,10 @@ const eventBuffer = 32
 type Manager struct {
 	client   *sbx.Client
 	stateDir string
+	// kits is the directory of sbx kits a session can be started with. It is
+	// read on every listing rather than cached: a user who drops a kit into it
+	// expects the next dialog to offer it, not the next restart.
+	kits *sbx.KitStore
 
 	mu        sync.RWMutex
 	sandboxes map[string]*Sandbox // by sandbox ID
@@ -93,20 +97,36 @@ type Manager struct {
 // restart, not capture every flicker along the way.
 const activityFlushInterval = 3 * time.Second
 
+// Option adjusts a manager at construction. There is one, and it exists so
+// that the kits directory can be pointed somewhere other than ~/.sbx/kits —
+// by a flag, and by the tests — without every caller of New having to name a
+// directory it has no opinion about.
+type Option func(*Manager)
+
+// WithKitsDir reads kits from dir instead of the default ~/.sbx/kits. An
+// empty dir means the default, so a flag left unset changes nothing.
+func WithKitsDir(dir string) Option {
+	return func(m *Manager) { m.kits = sbx.NewKitStore(dir) }
+}
+
 // New loads any previously persisted sandboxes from stateDir.
-func New(client *sbx.Client, stateDir string) (*Manager, error) {
+func New(client *sbx.Client, stateDir string, opts ...Option) (*Manager, error) {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
 	m := &Manager{
 		client:    client,
 		stateDir:  stateDir,
+		kits:      sbx.NewKitStore(""),
 		sandboxes: make(map[string]*Sandbox),
 		byName:    make(map[string]string),
 		sessions:  make(map[string]*Session),
 		projects:  make(map[string]*Project),
 		eventSubs: make(map[int]chan Event),
 		baseLocks: make(map[string]*sync.Mutex),
+	}
+	for _, opt := range opts {
+		opt(m)
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -144,6 +164,13 @@ type CreateSandboxRequest struct {
 	// it. See plugins.go and model.go for why a new sandbox has neither of
 	// its own.
 	PluginsFrom string `json:"pluginsFrom"`
+	// Kits names the sbx kits to build the sandbox with, by the name they go
+	// by in the kits directory — never by path: what the names resolve to is
+	// decided here, against what is actually installed on this machine. A kit
+	// can only be applied to a sandbox as it is created, so this is asked for
+	// wherever a session is started rather than offered afterwards.
+	Kits []string `json:"kits,omitempty"`
+
 	// NoPlugins leaves the new sandbox with whatever plugins its image came
 	// with, which is none. The model is copied either way: it is a setting of
 	// its own, chosen deliberately, and a project that wants no plugins has
@@ -184,6 +211,14 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		extras = append(extras, resolved)
 	}
 
+	// Before anything is made: a kit that is not there is a sandbox that would
+	// come up without the network policy or the tools it was asked for, and
+	// the person who asked is still waiting to be told.
+	kits, err := m.kits.Resolve(req.Kits)
+	if err != nil {
+		return nil, err
+	}
+
 	m.mu.RLock()
 	_, taken := m.byName[req.Name]
 	m.mu.RUnlock()
@@ -202,6 +237,7 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		ExtraWorkspaces: extras,
 		Publish:         req.Publish,
 		Clone:           req.Clone,
+		Kits:            sbx.KitRefs(kits),
 	}); err != nil {
 		return nil, err
 	}
@@ -214,6 +250,7 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		Workspace:       ws,
 		ExtraWorkspaces: extras,
 		Publish:         req.Publish,
+		Kits:            sbx.KitNames(kits),
 		CreatedAt:       now,
 		LastActivityAt:  now,
 		ProjectID:       req.ProjectID,
@@ -570,6 +607,15 @@ func (m *Manager) ensureSandbox(ctx context.Context, sb *Sandbox) error {
 	if sb.Clone {
 		return fmt.Errorf("sandbox %q no longer exists, and its workspace was a clone that only ever existed inside it: rebuilding it would give you an empty one under the same name, so anything not pushed from it is gone — delete it and start a new session", sb.Name)
 	}
+	// The kits it was built with are applied again, since they can only go on
+	// at create time: a rebuild without them would be the same sandbox by name
+	// and a weaker one in every way that was asked for. One that has since
+	// been removed from the kits directory stops the rebuild rather than
+	// quietly producing that sandbox.
+	kits, err := m.kits.Resolve(sb.Kits)
+	if err != nil {
+		return fmt.Errorf("sandbox %q was built with a kit that is no longer installed: %w", sb.Name, err)
+	}
 
 	createCtx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
@@ -579,7 +625,15 @@ func (m *Manager) ensureSandbox(ctx context.Context, sb *Sandbox) error {
 		Workspace:       sb.Workspace,
 		ExtraWorkspaces: sb.ExtraWorkspaces,
 		Publish:         sb.Publish,
+		Kits:            sbx.KitRefs(kits),
 	})
+}
+
+// Kits reports the sbx kits installed on this machine, and where they are
+// kept — which is what the UI tells a user who has none.
+func (m *Manager) Kits() ([]sbx.Kit, string, error) {
+	kits, err := m.kits.List()
+	return kits, m.kits.Dir(), err
 }
 
 // GetSession returns a session by ID.
