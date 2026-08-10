@@ -88,6 +88,17 @@
         <button type="button" id="btn-project-model">Model…</button>
       </div>
 
+      <!-- Whether a new sandbox is given the plugins the base one has. Unlike
+           the model this is the project's own record, so it is in the view
+           already and the row can show it without opening anything. -->
+      <div id="proj-plugins-row" class="settings-row project-model">
+        <span class="settings-row-text">
+          <strong>Plugins</strong>
+          <span id="proj-plugins-state" class="settings-sub"></span>
+        </span>
+        <button type="button" id="btn-project-plugins"></button>
+      </div>
+
       <h3 class="panel-heading">Sessions</h3>
       <ul id="proj-sessions" class="session-cards" aria-label="Sessions in this project"></ul>
 

@@ -467,3 +467,77 @@ func TestDeleteProjectCleansUpWorktrees(t *testing.T) {
 		t.Fatalf("the repository still lists the worktree:\n%s", list)
 	}
 }
+
+// The plugin copy is the project's own record rather than something kept in a
+// sandbox, so unlike the model it is written here and read back from the
+// project view — no sandbox is started to answer either half.
+func TestProjectPluginsToggle(t *testing.T) {
+	srv := projectServer(t)
+
+	raw, _ := json.Marshal(map[string]any{"name": "Demo", "path": t.TempDir(), "agent": "claude"})
+	rec := httptest.NewRecorder()
+	srv.handleCreateProject(rec, httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(string(raw))))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201 (%s)", rec.Code, rec.Body)
+	}
+	created := decodeJSON[projectView](t, rec)
+	if created.NoPlugins {
+		t.Error("a new project copies plugins, as it did before there was a setting")
+	}
+
+	set := func(noPlugins bool) projectView {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"noPlugins": noPlugins})
+		req := httptest.NewRequest(http.MethodPut, "/api/projects/"+created.ID+"/plugins", strings.NewReader(string(body)))
+		req.SetPathValue("id", created.ID)
+		rec := httptest.NewRecorder()
+		srv.handlePutProjectPlugins(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("put status = %d, want 200 (%s)", rec.Code, rec.Body)
+		}
+		return decodeJSON[projectView](t, rec)
+	}
+
+	if got := set(true); !got.NoPlugins {
+		t.Error("turning the copy off did not take")
+	}
+
+	// Read back the way the UI does: off the project view it polls anyway.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+created.ID, nil)
+	getReq.SetPathValue("id", created.ID)
+	getRec := httptest.NewRecorder()
+	srv.handleGetProject(getRec, getReq)
+	if !decodeJSON[projectView](t, getRec).NoPlugins {
+		t.Error("the project view does not report the choice, so the row cannot show it")
+	}
+
+	if got := set(false); got.NoPlugins {
+		t.Error("turning the copy back on did not take")
+	}
+}
+
+func TestProjectPluginsToggleRefusals(t *testing.T) {
+	srv := projectServer(t)
+
+	body := strings.NewReader(`{"noPlugins":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/nope/plugins", body)
+	req.SetPathValue("id", "nope")
+	rec := httptest.NewRecorder()
+	srv.handlePutProjectPlugins(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown project status = %d, want 404 (%s)", rec.Code, rec.Body)
+	}
+
+	// It changes what every session started afterwards is given, so it is not
+	// something another site gets to do on the user's behalf.
+	cross := httptest.NewRequest(http.MethodPut, "/api/projects/any/plugins", strings.NewReader(`{"noPlugins":true}`))
+	cross.SetPathValue("id", "any")
+	// Deliberately not example.com: that is the host httptest gives a request,
+	// so an Origin naming it would be the same origin and prove nothing.
+	cross.Header.Set("Origin", "https://somewhere-else.invalid")
+	crossRec := httptest.NewRecorder()
+	srv.handlePutProjectPlugins(crossRec, cross)
+	if crossRec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin status = %d, want 403 (%s)", crossRec.Code, crossRec.Body)
+	}
+}

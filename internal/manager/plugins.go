@@ -116,10 +116,14 @@ func (localHost) String() string { return "this machine" }
 // configSource picks where a new sandbox's Claude Code configuration — its
 // plugins and its selected model — should be copied from, or reports that it
 // should be left with whatever its image came with.
+//
+// Whether the plugins are wanted is a separate question, asked by the caller:
+// a project that has turned the plugin copy off has usually still chosen a
+// model, and the two settings sit next to each other on the same page.
 func (m *Manager) configSource(req CreateSandboxRequest) (pluginHost, bool) {
 	// Plugins are a Claude Code notion. A sandbox built for another agent has
 	// no claude in it to install them with, and no use for them if it did.
-	if req.NoPlugins || req.Agent != agentClaude {
+	if req.Agent != agentClaude {
 		return nil, false
 	}
 	if req.PluginsFrom == "" {
@@ -175,6 +179,35 @@ func (m *Manager) mirrorPlugins(target string, from pluginHost) {
 		}
 		log.Printf("plugins: %s: installed %s", target, p.ID)
 	}
+}
+
+// FillBasePlugins gives a project's base sandbox the plugins this machine has.
+//
+// It is what makes turning the copy back on mean anything. A project whose
+// base sandbox was built with the copy off has none in it, and a session
+// sandbox filled from that one would faithfully copy nothing — the setting
+// would read as on and do nothing at all, which is the worst of the three
+// states it could be in.
+//
+// It blocks for as long as a mirror takes, so callers run it in the
+// background: nobody is waiting on a plugin install the way they wait on a
+// session starting.
+func (m *Manager) FillBasePlugins(projectID string) error {
+	p, err := m.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+	// Same reason configSource has this test: there is no claude in a sandbox
+	// built for another agent to install anything with.
+	if p.Agent != agentClaude {
+		return nil
+	}
+	base, err := m.baseSandboxFor(projectID)
+	if err != nil {
+		return err
+	}
+	m.mirrorPlugins(base.Name, localHost{})
+	return nil
 }
 
 // pluginStep runs one "claude plugin ..." inside the target sandbox.

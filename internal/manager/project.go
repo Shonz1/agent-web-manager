@@ -40,6 +40,12 @@ type Project struct {
 	// project's sandboxes — the same idea as Sandbox.LastActivityAt, and what
 	// orders the project list most-recently-used first.
 	LastActivityAt time.Time `json:"lastActivityAt"`
+	// NoPlugins stops this project's sandboxes being given a copy of the Claude
+	// Code plugins the base sandbox has — see plugins.go for why they are
+	// copied at all. Stated negatively so that the zero value is the copy: a
+	// project written before this setting existed asked for nothing, and what
+	// it had was the plugins.
+	NoPlugins bool `json:"noPlugins,omitempty"`
 }
 
 // ProjectView is the JSON-facing snapshot of a project: the persisted
@@ -107,6 +113,35 @@ func (m *Manager) GetProject(id string) (*Project, error) {
 	p, ok := m.projects[id]
 	if !ok {
 		return nil, ErrProjectNotFound
+	}
+	return p, nil
+}
+
+// SetProjectPlugins says whether the sandboxes this project makes from now on
+// are given a copy of the Claude Code plugins the base sandbox has.
+//
+// It reaches nothing that already exists, for the reason SetProjectModel does
+// not: a sandbox was filled when it was made, and an agent running in one has
+// long since read what it found. Turning the copy off leaves the plugins where
+// they are and stops the next sandbox being given any; turning it back on
+// fills the one after that, not the ones already here.
+func (m *Manager) SetProjectPlugins(id string, noPlugins bool) (*Project, error) {
+	m.mu.Lock()
+	p, ok := m.projects[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, ErrProjectNotFound
+	}
+	p.NoPlugins = noPlugins
+	m.mu.Unlock()
+
+	if err := m.saveProjects(); err != nil {
+		return nil, err
+	}
+	if noPlugins {
+		log.Printf("plugins: %s keeps none, so the sandboxes it makes from now on start with none", p.Name)
+	} else {
+		log.Printf("plugins: %s passes them on again, to the sandboxes it makes from now on", p.Name)
 	}
 	return p, nil
 }
@@ -259,6 +294,11 @@ func (m *Manager) EnsureBaseSandbox(ctx context.Context, projectID string) (*San
 		Workspace: p.Path,
 		ProjectID: p.ID,
 		IsBase:    true,
+		// The base sandbox takes its plugins from this machine, and it is what
+		// every session sandbox is then filled from. A project that wants none
+		// wants none here first of all: filling this one would put them back
+		// into every session by the ordinary route.
+		NoPlugins: p.NoPlugins,
 	})
 	if err != nil {
 		return nil, err
@@ -337,6 +377,7 @@ func (m *Manager) CreateSessionSandbox(ctx context.Context, projectID string, cl
 		// from a settled sandbox of this project's own rather than from this
 		// machine, or from whichever session sandbox happened to be first.
 		PluginsFrom: base.Name,
+		NoPlugins:   p.NoPlugins,
 	})
 }
 

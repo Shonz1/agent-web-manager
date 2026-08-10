@@ -220,6 +220,58 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePutProjectPlugins turns the plugin copy on or off for the sandboxes a
+// project makes from now on. It writes nothing into a sandbox and starts none:
+// the answer is a field of the project, so it is in the project view already
+// and there is nothing here to read back.
+func (s *Server) handlePutProjectPlugins(w http.ResponseWriter, r *http.Request) {
+	// It changes what every sandbox made from now on is given, from a page that
+	// need not be this one otherwise, so it takes the guard the other settings
+	// endpoints take.
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, errors.New("cross-origin request"))
+		return
+	}
+
+	var req struct {
+		// NoPlugins stops the copy. Stated the same way round as the field it
+		// sets, so that nothing between here and the file has to remember which
+		// way a bool means.
+		NoPlugins bool `json:"noPlugins"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	p, err := s.mgr.SetProjectPlugins(r.PathValue("id"), req.NoPlugins)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+	if !req.NoPlugins {
+		// The base sandbox this project fills its sessions from may have been
+		// built while the copy was off, in which case it has none to pass on.
+		// Filling it is what makes turning this back on mean anything.
+		s.fillBasePlugins(p.ID)
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// fillBasePlugins tops up a project's base sandbox without holding up the
+// request that asked for it — a plugin mirror is a run of git clones, and the
+// answer to "turn this on" should not wait for them. A failure is logged, for
+// the reason startBaseSandbox logs its own: there is nobody still waiting to
+// be told, and the next sandbox this project makes reports it to someone who
+// is.
+func (s *Server) fillBasePlugins(projectID string) {
+	go func() {
+		if err := s.mgr.FillBasePlugins(projectID); err != nil {
+			log.Printf("plugins for project %s: %v", projectID, err)
+		}
+	}()
+}
+
 // startBaseSandbox makes a project's base sandbox without holding up the
 // request that asked for it. A failure is logged rather than reported: the
 // next session started in the project tries again, and reports it then to

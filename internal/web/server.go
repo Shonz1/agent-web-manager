@@ -84,6 +84,11 @@ func (s *Server) Handler() http.Handler {
 	// sandbox — see model.go for why it is not part of the project view.
 	mux.HandleFunc("GET /api/projects/{id}/model", s.handleGetProjectModel)
 	mux.HandleFunc("PUT /api/projects/{id}/model", s.handlePutProjectModel)
+	// Whether the sandboxes it makes are given the base sandbox's plugins.
+	// Unlike the model, this is the project's own record rather than something
+	// kept in a sandbox, so it is read from the project view and only written
+	// here.
+	mux.HandleFunc("PUT /api/projects/{id}/plugins", s.handlePutProjectPlugins)
 
 	// Sandboxes stay reachable directly too: a project's own sandboxes are
 	// listed and managed through these once a session has made one.
