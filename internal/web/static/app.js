@@ -255,7 +255,25 @@ function renderProjectList(force) {
 
     item.append(row, sub);
     item.addEventListener('click', () => selectProject(p.id));
-    group.append(item);
+
+    // A sibling, not a child: buttons cannot nest, and this one has to start
+    // a session without first opening the project the way the item's own
+    // click does.
+    const quick = document.createElement('button');
+    quick.type = 'button';
+    quick.className = 'quick-session-btn';
+    quick.textContent = '+';
+    quick.title = `Start a session in ${p.name}`;
+    quick.setAttribute('aria-label', `Start a session in ${p.name}`);
+    quick.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openSessionDialog(p);
+    });
+
+    const head = document.createElement('div');
+    head.className = 'project-head-row';
+    head.append(item, quick);
+    group.append(head);
 
     const sessions = p.sessions || [];
     if (sessions.length) {
@@ -1507,12 +1525,26 @@ async function submitCreateProject() {
 
 const sessionDialog = $('session-dialog');
 
-$('btn-new-session').addEventListener('click', () => {
-  const p = selectedProject();
-  if (!p) return;
+// The dialog can be opened from the sidebar's quick-start button, on a
+// project that need not be the current selection, so which project it is
+// starting a session in is tracked separately from state.sel.
+let sessionDialogProjectId = null;
+
+function sessionDialogProject() {
+  return findProject(sessionDialogProjectId);
+}
+
+function openSessionDialog(p) {
+  sessionDialogProjectId = p.id;
   $('session-error').hidden = true;
   resetSessionForm(p);
   sessionDialog.showModal();
+}
+
+$('btn-new-session').addEventListener('click', () => {
+  const p = selectedProject();
+  if (!p) return;
+  openSessionDialog(p);
 });
 
 $('session-cancel').addEventListener('click', () => sessionDialog.close());
@@ -1576,14 +1608,14 @@ function applyNsWorktree() {
 // The placeholder previews where the worktree would go, mirroring
 // git.DefaultWorktreePath the same way the sandbox-scoped dialog's does.
 function showNsDefaultWorktreePath() {
-  const p = selectedProject();
+  const p = sessionDialogProject();
   const branch = $('ns-branch').value.trim();
   $('ns-worktree-path').placeholder =
     p && p.path && branch ? defaultWorktreePath(p.path, branch) : '';
 }
 
 async function submitSession() {
-  const p = selectedProject();
+  const p = sessionDialogProject();
   if (!p) return;
 
   const worktree = nsWantsWorktree();
