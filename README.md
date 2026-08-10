@@ -87,6 +87,16 @@ rather than whichever sandbox happened to be made first. The UI marks it
 it; it goes when the project goes. A project that has lost its base sandbox
 gets another at the next start, or at the next session, whichever comes first.
 
+The **Model** row on the project page is the one thing you set in there. It
+reads `~/.claude/settings.json` out of the base sandbox and writes it back
+(`GET`/`PUT /api/projects/{id}/model`), so every session cloned from it
+afterwards comes up on that model — a name like `opus`, a full model id, or
+empty to leave the sandbox on its default. Sessions and sandboxes that already
+exist keep what they were given: an agent reads that file once, when it
+starts. Both directions run a command inside the base sandbox, which starts it
+if it is stopped, so the value is read when you open the dialog rather than
+gathered with the project list.
+
 ### 2. Start sessions in it
 
 **+ New session**, inside the project: any arguments to pass the agent after

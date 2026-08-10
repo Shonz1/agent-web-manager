@@ -424,6 +424,12 @@ body {
 
 .session-cards .empty-hint { padding: 20px 8px; }
 
+/* The model row sits above the project's first list, so it carries the air
+   between the two rather than the heading under it. */
+.project-model { margin-bottom: 18px; }
+/* A flex row wins over the hidden attribute on its own, as #tg-fields does. */
+.project-model[hidden] { display: none; }
+
 /* A second list in the same panel body needs air above it; the first heading
    sits at the top and must not gain any. */
 .panel-body .panel-heading + .session-cards + .panel-heading { margin-top: 18px; }

@@ -77,6 +77,17 @@
     <p id="proj-meta" class="meta"></p>
 
     <div class="panel-body">
+      <!-- The model the next session comes up on. It is kept in the project's
+           base sandbox, so reading it starts that sandbox — which is why the
+           row opens it rather than showing it on every refresh. -->
+      <div id="proj-model-row" class="settings-row project-model">
+        <span class="settings-row-text">
+          <strong>Model</strong>
+          <span id="proj-model-state" class="settings-sub"></span>
+        </span>
+        <button type="button" id="btn-project-model">Model…</button>
+      </div>
+
       <h3 class="panel-heading">Sessions</h3>
       <ul id="proj-sessions" class="session-cards" aria-label="Sessions in this project"></ul>
 
@@ -377,6 +388,36 @@
     <menu>
       <button type="button" id="agent-cancel">Cancel</button>
       <button type="button" id="agent-submit" class="primary">Start</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="model-dialog">
+  <form id="model-form" method="dialog">
+    <h2>Model for new sessions</h2>
+    <p id="model-note" class="dialog-note"></p>
+
+    <label>
+      Model <span class="optional">empty for the default</span>
+      <input id="model-name" type="text" list="model-suggestions" placeholder="opus"
+             autocomplete="off" spellcheck="false">
+      <datalist id="model-suggestions">
+        <option value="opus"></option>
+        <option value="sonnet"></option>
+        <option value="haiku"></option>
+      </datalist>
+      <small>
+        Whatever Claude Code takes for its <code>model</code> setting — an
+        alias like <code>opus</code>, or a full model id. It is not checked
+        here: a name the agent does not know is one the agent says so about.
+      </small>
+    </label>
+
+    <p id="model-error" class="error" hidden></p>
+
+    <menu>
+      <button type="button" id="model-cancel">Cancel</button>
+      <button type="button" id="model-submit" class="primary">Save</button>
     </menu>
   </form>
 </dialog>
