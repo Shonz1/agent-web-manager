@@ -37,6 +37,14 @@ func TestCreateArgs(t *testing.T) {
 			got:  CreateArgs(CreateOptions{Name: "box", Agent: "claude", Workspace: "/w", Clone: true}),
 			want: []string{"create", "--name", "box", "--clone", "claude", "/w"},
 		},
+		{
+			// Kits stack, in the order they were given, and only ever on a
+			// create: sbx refuses "--kit" against a sandbox that exists.
+			name: "each kit is a flag of its own",
+			got: CreateArgs(CreateOptions{Name: "box", Agent: "claude", Workspace: "/w",
+				Kits: []string{"/kits/vale", "/kits/packed.zip"}}),
+			want: []string{"create", "--name", "box", "--kit", "/kits/vale", "--kit", "/kits/packed.zip", "claude", "/w"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

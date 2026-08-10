@@ -9,13 +9,18 @@ import "time"
 // sbx's business, and which terminals are attached to it is the session
 // table's.
 type Sandbox struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Agent           string    `json:"agent"`
-	Workspace       string    `json:"workspace"`
-	ExtraWorkspaces []string  `json:"extraWorkspaces,omitempty"`
-	Publish         []string  `json:"publish,omitempty"`
-	CreatedAt       time.Time `json:"createdAt"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Agent           string   `json:"agent"`
+	Workspace       string   `json:"workspace"`
+	ExtraWorkspaces []string `json:"extraWorkspaces,omitempty"`
+	Publish         []string `json:"publish,omitempty"`
+	// Kits are the sbx kits this sandbox was created with, by name. Kept
+	// because they cannot be added afterwards: a sandbox sbx has lost is
+	// rebuilt with them, and until then this is the only remaining record that
+	// the session running in it was given more than the agent image.
+	Kits      []string  `json:"kits,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 	// LastActivityAt is the last time a person used this sandbox — set on
 	// creation and bumped whenever a session of its is started or typed at, so
 	// the sandbox list can be ordered by what was last used rather than by when

@@ -65,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
+	mux.HandleFunc("GET /api/kits", s.handleKits)
 	mux.HandleFunc("GET /api/fs/dirs", s.handleBrowse)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
@@ -155,6 +156,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agents": sbx.Agents})
+}
+
+// handleKits lists the sbx kits installed on this machine, for the new-session
+// dialog to offer. The directory is reported alongside them so that a user
+// with no kits is told where one would go, rather than shown an empty list
+// and left to find out.
+//
+// A directory that cannot be read is reported as no kits plus the reason: the
+// dialog is for starting a session, and a broken kits folder must not be what
+// stops one.
+func (s *Server) handleKits(w http.ResponseWriter, r *http.Request) {
+	kits, dir, err := s.mgr.Kits()
+	if kits == nil || err != nil {
+		// An empty list, never null: the UI iterates it without a guard.
+		kits = []sbx.Kit{}
+	}
+	resp := map[string]any{"kits": kits, "dir": dir}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- sandboxes ---

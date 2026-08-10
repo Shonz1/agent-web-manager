@@ -324,6 +324,17 @@
       <small>Passed to the agent after <code>--</code>.</small>
     </label>
 
+    <!-- Kits are sbx's own way of giving a sandbox more than its agent image
+         came with — network policy, credentials, tools, instructions for the
+         agent. One can only go on as the sandbox is made, and the session's
+         sandbox is made here, so here is where they are offered. The whole
+         block is hidden on a machine with no kits installed. -->
+    <div id="ns-kits-line" hidden>
+      <span class="group-label">Kits <span class="optional">optional</span></span>
+      <div id="ns-kits"></div>
+      <small id="ns-kits-note"></small>
+    </div>
+
     <!-- Either way the session gets a sandbox of its own. The choice is where
          its checkout lives: a clone inside the sandbox, which is the default
          and touches nothing on this machine, or a worktree on the host, which

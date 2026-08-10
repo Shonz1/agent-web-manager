@@ -47,6 +47,10 @@ type sandboxSummary struct {
 	IsBase     bool `json:"isBase,omitempty"`
 	Clone      bool `json:"clone,omitempty"`
 	IsWorktree bool `json:"isWorktree,omitempty"`
+	// Kits it was built with, by name. A kit cannot be added to a sandbox
+	// afterwards, so this is not a setting to change from here — it is the
+	// only place a session's kits can be seen once it is running.
+	Kits []string `json:"kits,omitempty"`
 	// Sessions counts what is running in the sandbox right now, which is what
 	// says whether removing it would take a live terminal with it.
 	Sessions int `json:"sessions"`
@@ -126,6 +130,7 @@ func decorateProject(ctx context.Context, g *git.Client, v manager.ProjectView) 
 			IsBase:     sb.IsBase,
 			Clone:      sb.Clone,
 			IsWorktree: sb.IsWorktree,
+			Kits:       sb.Kits,
 			Sessions:   len(sb.Sessions),
 		})
 	}
@@ -300,6 +305,11 @@ type startProjectSessionRequest struct {
 	Branch   string `json:"branch"`
 	// Path is where the worktree goes. Empty puts it beside the repository.
 	Path string `json:"path"`
+	// Kits names the sbx kits to build the session's sandbox with, from the
+	// listing at /api/kits. Asked for here because a kit goes on a sandbox as
+	// it is created and never afterwards, and this is where the session's
+	// sandbox is made — whichever kind of workspace it is given.
+	Kits []string `json:"kits,omitempty"`
 }
 
 // startProjectSessionResponse reports what starting a project session made:
@@ -351,7 +361,7 @@ func (s *Server) handleStartProjectSession(w http.ResponseWriter, r *http.Reques
 	// either sharing a checkout or needing a worktree apiece. A project
 	// folder that is not a checkout has nothing to clone, and those sessions
 	// are mounted on the folder itself instead.
-	sb, err := s.mgr.CreateSessionSandbox(ctx, proj.ID, s.gitClient().IsRepo(ctx, proj.Path))
+	sb, err := s.mgr.CreateSessionSandbox(ctx, proj.ID, s.gitClient().IsRepo(ctx, proj.Path), req.Kits)
 	if err != nil {
 		writeError(w, statusFor(err), err)
 		return
@@ -419,6 +429,10 @@ func (s *Server) startWorktreeProjectSession(w http.ResponseWriter, r *http.Requ
 		ProjectID:       proj.ID,
 		IsWorktree:      true,
 		RepoRoot:        tree.RepoRoot,
+		// The kits chosen with the session, as a clone session's sandbox gets
+		// them: which workspace a session was given says nothing about what it
+		// should have been built with.
+		Kits: req.Kits,
 		// From the project's base sandbox, as a clone session's is: what a
 		// session inherits should not depend on which kind of workspace it
 		// was given.

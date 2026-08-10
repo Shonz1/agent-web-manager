@@ -396,7 +396,7 @@ func TestProjectPluginChoiceReachesTheSandboxesItMakes(t *testing.T) {
 		t.Fatalf("SetProjectPlugins: %v", err)
 	}
 
-	if _, err := m.CreateSessionSandbox(context.Background(), p.ID, true); err != nil {
+	if _, err := m.CreateSessionSandbox(context.Background(), p.ID, true, nil); err != nil {
 		t.Fatalf("CreateSessionSandbox: %v", err)
 	}
 	if ranPluginCommand(t, logPath) {
@@ -408,7 +408,7 @@ func TestProjectPluginChoiceReachesTheSandboxesItMakes(t *testing.T) {
 	if _, err := m.SetProjectPlugins(p.ID, false); err != nil {
 		t.Fatalf("SetProjectPlugins back on: %v", err)
 	}
-	if _, err := m.CreateSessionSandbox(context.Background(), p.ID, true); err != nil {
+	if _, err := m.CreateSessionSandbox(context.Background(), p.ID, true, nil); err != nil {
 		t.Fatalf("second CreateSessionSandbox: %v", err)
 	}
 	if !ranPluginCommand(t, logPath) {

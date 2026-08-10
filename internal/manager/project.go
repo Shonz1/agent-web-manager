@@ -358,7 +358,12 @@ func (m *Manager) EnsureBaseSandboxes(ctx context.Context) map[string]error {
 // nothing to clone: those sessions get a sandbox of their own mounted on the
 // folder itself, and share it the way two shells on one machine do. Only the
 // caller can tell, which is why it is asked rather than worked out here.
-func (m *Manager) CreateSessionSandbox(ctx context.Context, projectID string, clone bool) (*Sandbox, error) {
+//
+// kits are the sbx kits the session asked for, by name. They belong to the
+// session rather than to the project because they are chosen with it, and
+// because a kit can only ever go on a sandbox being made — which, for a
+// session, is this one.
+func (m *Manager) CreateSessionSandbox(ctx context.Context, projectID string, clone bool, kits []string) (*Sandbox, error) {
 	p, err := m.GetProject(projectID)
 	if err != nil {
 		return nil, err
@@ -373,6 +378,7 @@ func (m *Manager) CreateSessionSandbox(ctx context.Context, projectID string, cl
 		Workspace: p.Path,
 		ProjectID: p.ID,
 		Clone:     clone,
+		Kits:      kits,
 		// The whole point of the base sandbox: what a session inherits comes
 		// from a settled sandbox of this project's own rather than from this
 		// machine, or from whichever session sandbox happened to be first.
