@@ -1,0 +1,47 @@
+name: release-please
+
+# Conventional commits on main accumulate into a release PR. Merging that PR
+# cuts the version bump, CHANGELOG, tag, and GitHub release; the artifacts job
+# then attaches the binaries.
+#
+# The tag is pushed with GITHUB_TOKEN, which by design does not trigger other
+# workflows -- so the build is chained here rather than left to release.yml's
+# tag trigger.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: propose or cut release
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  artifacts:
+    name: artifacts
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: write

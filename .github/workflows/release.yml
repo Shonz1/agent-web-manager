@@ -1,0 +1,21 @@
+name: release
+
+# Escape hatch for tags pushed by hand (or re-running a release's build).
+# The normal path is release-please.yml.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  artifacts:
+    name: artifacts
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: write
