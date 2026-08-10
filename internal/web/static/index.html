@@ -179,6 +179,7 @@
         <button id="term-sandbox" class="badge link-badge" title="Show this sandbox"></button>
       </div>
       <div class="topbar-actions">
+        <button id="btn-shell" title="Start a shell session in this session's sandbox">Shell</button>
         <button id="btn-interrupt" title="Send Ctrl-C">Interrupt</button>
         <button id="btn-restart" title="Run this session again">Restart</button>
         <button id="btn-close-session" class="danger" title="End this session; the sandbox keeps running">End session</button>
@@ -195,7 +196,6 @@
               aria-selected="true" aria-controls="terminal">Agent</button>
       <button type="button" id="tab-diff" class="view-tab" role="tab"
               aria-selected="false" aria-controls="diff-pane">Changes<span id="diff-count" class="count" hidden></span></button>
-      <button type="button" id="tab-shell" class="view-tab" title="Open a shell in this session's sandbox">Terminal</button>
     </div>
 
     <div id="terminal" class="terminal"></div>
@@ -271,12 +271,7 @@
     </label>
     <p id="ns-agent-fixed" class="dialog-note" hidden></p>
 
-    <div class="source-toggle" role="radiogroup" aria-label="Session kind">
-      <label><input type="radio" name="ns-kind" value="agent" checked> Agent session</label>
-      <label><input type="radio" name="ns-kind" value="shell"> Shell</label>
-    </div>
-
-    <label id="ns-args-line">
+    <label>
       Agent arguments <span class="optional">space separated</span>
       <input id="ns-args" type="text" placeholder="--continue" autocomplete="off" spellcheck="false">
       <small>Passed to the agent after <code>--</code>.</small>
