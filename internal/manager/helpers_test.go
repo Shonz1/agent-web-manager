@@ -7,10 +7,10 @@ import (
 	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
 )
 
-// Nothing outside this package names a worktree sandbox any more, so this
+// Nothing outside this package names a session's sandbox any more, so this
 // name is the only one there will be: it has to be valid, derived from the
 // project rather than the branch, and different every time.
-func TestDefaultWorktreeSandboxName(t *testing.T) {
+func TestDefaultProjectSandboxName(t *testing.T) {
 	for _, tc := range []struct {
 		project string
 		prefix  string
@@ -21,12 +21,12 @@ func TestDefaultWorktreeSandboxName(t *testing.T) {
 		{"", "project-"},
 		{"///", "project-"},
 	} {
-		got := DefaultWorktreeSandboxName(tc.project)
+		got := DefaultProjectSandboxName(tc.project)
 		if !strings.HasPrefix(got, tc.prefix) {
-			t.Errorf("DefaultWorktreeSandboxName(%q) = %q, want the prefix %q", tc.project, got, tc.prefix)
+			t.Errorf("DefaultProjectSandboxName(%q) = %q, want the prefix %q", tc.project, got, tc.prefix)
 		}
 		if !sbx.ValidName(got) {
-			t.Errorf("DefaultWorktreeSandboxName(%q) = %q, which sbx will not accept", tc.project, got)
+			t.Errorf("DefaultProjectSandboxName(%q) = %q, which sbx will not accept", tc.project, got)
 		}
 	}
 
@@ -34,7 +34,7 @@ func TestDefaultWorktreeSandboxName(t *testing.T) {
 	// which is the whole reason the name carries a slug rather than a branch.
 	seen := make(map[string]bool)
 	for range 50 {
-		name := DefaultWorktreeSandboxName("demo")
+		name := DefaultProjectSandboxName("demo")
 		if seen[name] {
 			t.Fatalf("%q came back twice", name)
 		}

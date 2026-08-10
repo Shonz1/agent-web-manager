@@ -464,3 +464,59 @@ func TestCountLines(t *testing.T) {
 		t.Errorf("missing file = %d lines, binary %v, want 0 and false", n, binary)
 	}
 }
+
+// A clone sandbox's checkout is inside the container and nowhere on this
+// machine, so its git has to run in there — with the directory named by "-C"
+// rather than by the working directory, and the environment carried as an
+// argument, since neither of those crosses "sbx exec".
+func TestCommandRunsInsideASandbox(t *testing.T) {
+	c := New("/opt/homebrew/bin/git").InSandbox("/usr/local/bin/sbx", "demo-9f2c")
+	cmd := c.command(t.Context(), "/work/app", []string{"diff", "--numstat"})
+
+	if cmd.Path != "/usr/local/bin/sbx" {
+		t.Errorf("running %q, want the sbx binary", cmd.Path)
+	}
+	if cmd.Dir != "" {
+		t.Errorf("working directory = %q, want none: it would be this machine's, not the sandbox's", cmd.Dir)
+	}
+	line := strings.Join(cmd.Args, " ")
+	for _, want := range []string{
+		"exec demo-9f2c env",
+		"GIT_OPTIONAL_LOCKS=0",
+		// Not the -git binary: that one is on this machine, and the sandbox
+		// has its own.
+		"git -C /work/app diff --numstat",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("argv %q does not contain %q", line, want)
+		}
+	}
+}
+
+// The ordinary case is unchanged: git here, in the directory itself.
+func TestCommandRunsHereByDefault(t *testing.T) {
+	cmd := New("git").command(t.Context(), "/work/app", []string{"status"})
+	if cmd.Dir != "/work/app" {
+		t.Errorf("working directory = %q, want /work/app", cmd.Dir)
+	}
+	if got := strings.Join(cmd.Args[1:], " "); got != "status" {
+		t.Errorf("args = %q, want just the git command", got)
+	}
+}
+
+func TestParseNumstatLine(t *testing.T) {
+	for _, tt := range []struct {
+		out    string
+		added  int
+		binary bool
+	}{
+		{"12\t0\tnew.txt\n", 12, false},
+		{"-\t-\tblob.bin\n", 0, true},
+		{"", 0, false},
+	} {
+		added, binary := parseNumstatLine(tt.out)
+		if added != tt.added || binary != tt.binary {
+			t.Errorf("%q = (%d, %v), want (%d, %v)", tt.out, added, binary, tt.added, tt.binary)
+		}
+	}
+}

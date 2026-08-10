@@ -263,8 +263,22 @@
                autocomplete="off" spellcheck="false">
         <button type="button" id="p-path-browse" title="Pick a folder">Browse…</button>
       </span>
-      <small>Bind-mounted into whatever sandboxes this project's sessions run in.</small>
+      <small>Cloned into whatever sandboxes this project's sessions run in.</small>
     </label>
+
+    <!-- The agent belongs to the project: every sandbox under it — the base
+         one and the clone each session runs in — is built for this agent, and
+         a clone cannot be of a different agent than what it came from. -->
+    <label>
+      Agent
+      <select id="p-agent" required></select>
+      <small>Every session in this project runs it. It cannot be changed afterwards.</small>
+    </label>
+
+    <p id="create-project-note" class="dialog-note">
+      Creating the project builds its base sandbox, which every session is cloned from. That can take
+      a few minutes the first time, while the agent's image is pulled.
+    </p>
 
     <p id="create-project-error" class="error" hidden></p>
 
@@ -280,12 +294,7 @@
     <h2>New session</h2>
     <p id="session-note" class="dialog-note"></p>
 
-    <label id="ns-agent-line">
-      Agent
-      <select id="ns-agent" required></select>
-      <small>The agent this project's sandbox is built for. Every non-worktree session in this project shares it.</small>
-    </label>
-    <p id="ns-agent-fixed" class="dialog-note" hidden></p>
+    <p id="ns-agent-fixed" class="dialog-note"></p>
 
     <label>
       Agent arguments <span class="optional">space separated</span>
@@ -293,12 +302,13 @@
       <small>Passed to the agent after <code>--</code>.</small>
     </label>
 
-    <!-- The same session, on a branch and a checkout of its own. A worktree
-         session always gets a fresh sandbox, so it always picks its own agent
-         regardless of whether the project already has a main one. -->
+    <!-- Either way the session gets a sandbox of its own. The choice is where
+         its checkout lives: a clone inside the sandbox, which is the default
+         and touches nothing on this machine, or a worktree on the host, which
+         is a directory the user can open in their own editor. -->
     <label id="ns-worktree-line" class="check-line">
       <input id="ns-worktree" type="checkbox">
-      Give this session a git worktree of its own
+      Check out a git worktree on this machine instead of cloning inside the sandbox
     </label>
 
     <div id="ns-worktree-fields" class="check-fields" hidden>

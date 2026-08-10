@@ -93,26 +93,47 @@ func (c *Client) Remove(ctx context.Context, name string) error {
 	return err
 }
 
+// CreateOptions describes the sandbox "sbx create" should make. It is a
+// struct rather than a parameter list because the interesting part is which
+// of the optional pieces are set, and a call site naming them reads far
+// better than one counting nils.
+type CreateOptions struct {
+	Name            string
+	Agent           string
+	Workspace       string
+	ExtraWorkspaces []string
+	Publish         []string
+	// Clone asks for a sandbox whose workspace is a standalone git clone of
+	// the host checkout, made when the sandbox starts, rather than the host
+	// checkout itself bind-mounted in. Nothing the agent does inside reaches
+	// the host until someone fetches from the sandbox, which is what makes
+	// several sandboxes on one folder safe to run at once.
+	Clone bool
+}
+
 // Create makes a sandbox and returns once it exists, without attaching to it.
 // Sessions are started separately, with AttachArgs or ShellArgs.
-func (c *Client) Create(ctx context.Context, name, agent, workspace string, extraWorkspaces, publish []string) error {
-	_, err := c.output(ctx, CreateArgs(name, agent, workspace, extraWorkspaces, publish)...)
+func (c *Client) Create(ctx context.Context, opts CreateOptions) error {
+	_, err := c.output(ctx, CreateArgs(opts)...)
 	return err
 }
 
 // CreateArgs builds the argv for "sbx create": a sandbox with no session
 // running in it yet. The flags come before the agent because "sbx create"
 // dispatches to a per-agent subcommand once it sees the agent name.
-func CreateArgs(name, agent, workspace string, extraWorkspaces, publish []string) []string {
-	args := []string{"create", "--name", name}
-	for _, p := range publish {
+func CreateArgs(opts CreateOptions) []string {
+	args := []string{"create", "--name", opts.Name}
+	if opts.Clone {
+		args = append(args, "--clone")
+	}
+	for _, p := range opts.Publish {
 		args = append(args, "--publish", p)
 	}
-	args = append(args, agent)
-	if workspace != "" {
-		args = append(args, workspace)
+	args = append(args, opts.Agent)
+	if opts.Workspace != "" {
+		args = append(args, opts.Workspace)
 	}
-	return append(args, extraWorkspaces...)
+	return append(args, opts.ExtraWorkspaces...)
 }
 
 // AttachArgs builds the argv for an agent session: "sbx run" against a

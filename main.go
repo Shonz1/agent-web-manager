@@ -67,6 +67,12 @@ func run() error {
 	}
 	defer stopNotify()
 
+	// Every project needs the base sandbox its sessions are cloned from. In
+	// the background: there may be an image to pull for each, and the UI is
+	// worth serving while that happens — a session started in the meantime
+	// waits for the same create rather than starting one of its own.
+	go ensureBaseSandboxes(mgr)
+
 	webSrv := web.NewServer(mgr, client, notifier, git.New(*gitBin), web.StaticFS())
 	srv := &http.Server{
 		Addr:              *addr,
@@ -106,6 +112,24 @@ func run() error {
 	mgr.Shutdown()
 	return nil
 }
+
+// ensureBaseSandboxes makes the base sandbox of any project that has none —
+// a project created while sbx was not working, or one from before base
+// sandboxes existed. A project whose folder or agent image is no longer there
+// is reported and skipped: the rest still get theirs, and the next session
+// started in that one reports the failure to somebody who can act on it.
+func ensureBaseSandboxes(mgr *manager.Manager) {
+	ctx, cancel := context.WithTimeout(context.Background(), baseSweepTimeout)
+	defer cancel()
+	for id, err := range mgr.EnsureBaseSandboxes(ctx) {
+		log.Printf("warning: project %s has no base sandbox: %v", id, err)
+	}
+}
+
+// baseSweepTimeout bounds that whole sweep. Each sandbox in it may have an
+// image to pull, so it is generous — but it does end, rather than leaving a
+// goroutine pulling images into a process that is shutting down.
+const baseSweepTimeout = 30 * time.Minute
 
 // startNotify begins relaying the manager's events to Telegram. The relay runs
 // whether or not a bot is configured yet, because the settings page can

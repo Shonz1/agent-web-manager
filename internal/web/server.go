@@ -285,6 +285,11 @@ func statusFor(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, manager.ErrExists):
 		return http.StatusConflict
+	case errors.Is(err, manager.ErrBaseSandbox):
+		// Not a request that arrived wrong: this one is understood and
+		// refused, which is what the UI greys the base sandbox's buttons out
+		// to say before it is ever sent.
+		return http.StatusForbidden
 	default:
 		return http.StatusBadRequest
 	}

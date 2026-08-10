@@ -472,6 +472,9 @@ body {
 .badge.activity.idle    { opacity: .6; }
 .badge.sandbox-running { color: var(--green); border-color: #23582f; }
 .badge.sandbox-missing { color: var(--red);   border-color: #5c2320; }
+/* The project's base sandbox: not a state, but a kind — marked so the row
+   that offers no actions is recognisable before it is clicked. */
+.badge.base { color: var(--amber); border-color: #5c4416; }
 
 /* A badge that navigates: same chip, but clickable. */
 button.link-badge {

@@ -213,7 +213,7 @@ func TestReadPluginSetPropagatesFailure(t *testing.T) {
 	}
 }
 
-func TestPluginSource(t *testing.T) {
+func TestConfigSource(t *testing.T) {
 	m := &Manager{}
 
 	tests := []struct {
@@ -227,7 +227,7 @@ func TestPluginSource(t *testing.T) {
 			want: "this machine",
 		},
 		{
-			name: "a worktree sandbox takes them from the one it branched off",
+			name: "a session sandbox takes them from the base sandbox it was cloned from",
 			req:  CreateSandboxRequest{Agent: "claude", PluginsFrom: "claude-app"},
 			want: "sandbox claude-app",
 		},
@@ -248,7 +248,7 @@ func TestPluginSource(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			from, ok := m.pluginSource(tt.req)
+			from, ok := m.configSource(tt.req)
 			if tt.want == "" {
 				if ok {
 					t.Fatalf("want no source, got %s", from)

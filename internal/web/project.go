@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/oleksiiipatov/agent-web-manager/internal/git"
 	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
 )
 
 // projectTimeout bounds a project read: assembling a view walks its
@@ -26,22 +25,28 @@ const projectTimeout = 15 * time.Second
 type projectSessionView struct {
 	manager.SessionView
 	Branch     string `json:"branch,omitempty"`
+	Clone      bool   `json:"clone,omitempty"`
 	IsWorktree bool   `json:"isWorktree,omitempty"`
 }
 
 // sandboxSummary is as much of a sandbox as the project view exposes:
-// enough for the "new session" dialog to say whether a project already has a
-// main sandbox and what agent it is fixed to, and enough for the project
-// panel to list the sandboxes themselves — which is the only place a sandbox
-// left behind by a session that has since ended can be seen, and removed.
+// enough for the "new session" dialog to say what the project's base sandbox
+// is doing, and enough for the project panel to list the sandboxes
+// themselves — which is the only place a sandbox left behind by a session
+// that has since ended can be seen, and removed.
 type sandboxSummary struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Agent      string `json:"agent"`
-	Status     string `json:"status"`
-	Workspace  string `json:"workspace,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	IsWorktree bool   `json:"isWorktree,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Agent     string `json:"agent"`
+	Status    string `json:"status"`
+	Workspace string `json:"workspace,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	// IsBase, Clone and IsWorktree are what the UI marks a sandbox by, and
+	// what tells it which actions to refuse: nothing can be done to a base
+	// sandbox on its own.
+	IsBase     bool `json:"isBase,omitempty"`
+	Clone      bool `json:"clone,omitempty"`
+	IsWorktree bool `json:"isWorktree,omitempty"`
 	// Sessions counts what is running in the sandbox right now, which is what
 	// says whether removing it would take a live terminal with it.
 	Sessions int `json:"sessions"`
@@ -55,9 +60,17 @@ type sandboxSummary struct {
 // session ended.
 type projectView struct {
 	manager.Project
-	MainSandbox *sandboxSummary      `json:"mainSandbox,omitempty"`
+	// BaseSandbox is the one every session sandbox is cloned from. It is
+	// absent only in the moments between a project being created and its base
+	// sandbox finishing — which the UI says out loud, since no session can
+	// start until it is there.
+	BaseSandbox *sandboxSummary      `json:"baseSandbox,omitempty"`
 	Sandboxes   []sandboxSummary     `json:"sandboxes"`
 	Sessions    []projectSessionView `json:"sessions"`
+	// Repo says whether the project's folder is a git checkout, which decides
+	// both of the things the new-session dialog has to say: whether a session
+	// gets a clone of it, and whether a worktree can be offered at all.
+	Repo bool `json:"repo"`
 }
 
 // decorateProject reads each of a project's sandboxes' branches — once per
@@ -69,15 +82,20 @@ func decorateProject(ctx context.Context, g *git.Client, v manager.ProjectView) 
 		byID[sb.ID] = sb
 	}
 	branches := make(map[string]string, len(v.Sandboxes))
-	branchFor := func(workspace string) string {
-		if workspace == "" {
+	// A clone sandbox has a branch of its own, but only inside the container:
+	// its workspace path on the host holds the project folder, whose branch
+	// is somebody else's. Reading the real one would mean an "sbx exec" per
+	// sandbox on every refresh of the project list — and starting whichever
+	// of them are stopped — so it goes unsaid rather than misreported.
+	branchFor := func(sb manager.SandboxView) string {
+		if sb.Workspace == "" || sb.Clone {
 			return ""
 		}
-		if b, ok := branches[workspace]; ok {
+		if b, ok := branches[sb.Workspace]; ok {
 			return b
 		}
-		b := g.Branch(ctx, workspace)
-		branches[workspace] = b
+		b := g.Branch(ctx, sb.Workspace)
+		branches[sb.Workspace] = b
 		return b
 	}
 
@@ -85,14 +103,15 @@ func decorateProject(ctx context.Context, g *git.Client, v manager.ProjectView) 
 		Project:   v.Project,
 		Sandboxes: make([]sandboxSummary, 0, len(v.Sandboxes)),
 		Sessions:  make([]projectSessionView, 0, len(v.Sessions)),
+		Repo:      g.IsRepo(ctx, v.Path),
 	}
 	// The manager holds its sandboxes in a map, so an order has to be put on
-	// them here: the project's own sandbox first — it is the one every plain
-	// session shares — then the worktrees, most recently used first.
+	// them here: the base sandbox first — it is what the others came from —
+	// then the session sandboxes, most recently used first.
 	boxes := append([]manager.SandboxView(nil), v.Sandboxes...)
 	sort.SliceStable(boxes, func(i, j int) bool {
-		if boxes[i].IsWorktree != boxes[j].IsWorktree {
-			return !boxes[i].IsWorktree
+		if boxes[i].IsBase != boxes[j].IsBase {
+			return boxes[i].IsBase
 		}
 		return boxes[i].LastActivityAt.After(boxes[j].LastActivityAt)
 	})
@@ -103,24 +122,27 @@ func decorateProject(ctx context.Context, g *git.Client, v manager.ProjectView) 
 			Agent:      sb.Agent,
 			Status:     sb.Status,
 			Workspace:  sb.Workspace,
-			Branch:     branchFor(sb.Workspace),
+			Branch:     branchFor(sb),
+			IsBase:     sb.IsBase,
+			Clone:      sb.Clone,
 			IsWorktree: sb.IsWorktree,
 			Sessions:   len(sb.Sessions),
 		})
 	}
 	for i := range out.Sandboxes {
-		if out.Sandboxes[i].IsWorktree {
+		if !out.Sandboxes[i].IsBase {
 			continue
 		}
-		main := out.Sandboxes[i]
-		out.MainSandbox = &main
+		base := out.Sandboxes[i]
+		out.BaseSandbox = &base
 		break
 	}
 	for _, sess := range v.Sessions {
 		sb := byID[sess.SandboxID]
 		out.Sessions = append(out.Sessions, projectSessionView{
 			SessionView: sess,
-			Branch:      branchFor(sb.Workspace),
+			Branch:      branchFor(sb),
+			Clone:       sb.Clone,
 			IsWorktree:  sb.IsWorktree,
 		})
 	}
@@ -150,6 +172,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// The base sandbox is made in the background: it may have an agent image
+	// to pull, and holding the answer to "create this project" for minutes to
+	// report a sandbox the user did not ask about by name would be a poor
+	// trade. The project appears with it still building, and a session
+	// started before it is ready waits for the same create rather than
+	// starting a second one.
+	s.startBaseSandbox(p.ID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), projectTimeout)
 	defer cancel()
@@ -191,18 +220,30 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// startProjectSessionRequest asks for a session in a project: either in its
-// main sandbox — made the first time this is asked for, and reused by every
-// such request after — or, with Worktree set, in a fresh sandbox mounted on
-// a branch and checkout of its own.
+// startBaseSandbox makes a project's base sandbox without holding up the
+// request that asked for it. A failure is logged rather than reported: the
+// next session started in the project tries again, and reports it then to
+// somebody who is waiting for an answer.
+func (s *Server) startBaseSandbox(projectID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
+		defer cancel()
+		if _, err := s.mgr.EnsureBaseSandbox(ctx, projectID); err != nil {
+			log.Printf("base sandbox for project %s: %v", projectID, err)
+		}
+	}()
+}
+
+// startProjectSessionRequest asks for a session in a project: either in a
+// clone of its base sandbox — a fresh one every time — or, with Worktree
+// set, in a sandbox mounted on a branch and checkout of its own on the host.
+//
+// Neither names an agent: that belongs to the project, and both kinds of
+// sandbox are built for it.
 type startProjectSessionRequest struct {
 	manager.StartSessionRequest
-	// Agent picks the sandbox's agent. It only matters the first time a
-	// project's main sandbox is made, and always for a worktree session,
-	// which gets a sandbox — and so an agent — of its own every time.
-	Agent string `json:"agent"`
-	// Worktree, when true, gives the session a branch and checkout of its
-	// own rather than running in the project's main sandbox.
+	// Worktree, when true, gives the session a checkout of its own on the
+	// host rather than a clone inside the sandbox.
 	Worktree bool   `json:"worktree"`
 	Branch   string `json:"branch"`
 	// Path is where the worktree goes. Empty puts it beside the repository.
@@ -248,18 +289,25 @@ func (s *Server) handleStartProjectSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Starting a session can take minutes: EnsureProjectSandbox may have to
-	// pull an agent image the first time, exactly like a plain sandbox create.
+	// Starting a session can take minutes: the base sandbox may still be
+	// building, and the clone made from it may have an image to pull.
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
 
-	sb, err := s.mgr.EnsureProjectSandbox(ctx, proj.ID, strings.TrimSpace(req.Agent))
+	// A sandbox of its own for every session, cloned from the project's base
+	// one: several sessions can then work on the project at once without
+	// either sharing a checkout or needing a worktree apiece. A project
+	// folder that is not a checkout has nothing to clone, and those sessions
+	// are mounted on the folder itself instead.
+	sb, err := s.mgr.CreateSessionSandbox(ctx, proj.ID, s.gitClient().IsRepo(ctx, proj.Path))
 	if err != nil {
 		writeError(w, statusFor(err), err)
 		return
 	}
 	sess, err := s.mgr.StartSession(ctx, sb.ID, req.StartSessionRequest)
 	if err != nil {
+		// The sandbox stays: it is what was asked for, and "Start agent"
+		// retries the session in it without making another.
 		writeError(w, statusFor(err), err)
 		return
 	}
@@ -277,12 +325,6 @@ func (s *Server) handleStartProjectSession(w http.ResponseWriter, r *http.Reques
 // handleStartWorktreeSession, which does the same for a sandbox already
 // chosen rather than a project.
 func (s *Server) startWorktreeProjectSession(w http.ResponseWriter, r *http.Request, proj *manager.Project, req startProjectSessionRequest) {
-	agent := strings.TrimSpace(req.Agent)
-	if !sbx.ValidAgent(agent) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown agent %q", agent))
-		return
-	}
-
 	gitCtx, cancelGit := context.WithTimeout(r.Context(), worktreeTimeout)
 	defer cancelGit()
 
@@ -302,11 +344,22 @@ func (s *Server) startWorktreeProjectSession(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
 
+	// The base sandbox is what this one takes its plugins and its model from,
+	// the same as a clone session's sandbox does. A worktree made for a
+	// session that then cannot start is rolled back, exactly as it is when
+	// the sandbox itself fails.
+	base, err := s.mgr.EnsureBaseSandbox(ctx, proj.ID)
+	if err != nil {
+		s.removeWorktree(tree)
+		writeError(w, statusFor(err), err)
+		return
+	}
+
 	created, err := s.mgr.CreateSandbox(manager.CreateSandboxRequest{
 		// Named after the project plus a random slug, never after the branch
-		// or by the browser — see manager.DefaultWorktreeSandboxName.
-		Name:      manager.DefaultWorktreeSandboxName(proj.Name),
-		Agent:     agent,
+		// or by the browser — see manager.DefaultProjectSandboxName.
+		Name:      manager.DefaultProjectSandboxName(proj.Name),
+		Agent:     proj.Agent,
 		Workspace: tree.Path,
 		// The repository the worktree belongs to, so the agent has git at
 		// all — a worktree's ".git" is a file pointing back into it.
@@ -314,6 +367,10 @@ func (s *Server) startWorktreeProjectSession(w http.ResponseWriter, r *http.Requ
 		ProjectID:       proj.ID,
 		IsWorktree:      true,
 		RepoRoot:        tree.RepoRoot,
+		// From the project's base sandbox, as a clone session's is: what a
+		// session inherits should not depend on which kind of workspace it
+		// was given.
+		PluginsFrom: base.Name,
 	})
 	if err != nil {
 		// The worktree was made for a sandbox that never came up. Leaving it

@@ -113,9 +113,10 @@ func (localHost) run(ctx context.Context, argv ...string) ([]byte, error) {
 
 func (localHost) String() string { return "this machine" }
 
-// pluginSource picks where a new sandbox's plugins should come from, or
-// reports that it should not be given any.
-func (m *Manager) pluginSource(req CreateSandboxRequest) (pluginHost, bool) {
+// configSource picks where a new sandbox's Claude Code configuration — its
+// plugins and its selected model — should be copied from, or reports that it
+// should be left with whatever its image came with.
+func (m *Manager) configSource(req CreateSandboxRequest) (pluginHost, bool) {
 	// Plugins are a Claude Code notion. A sandbox built for another agent has
 	// no claude in it to install them with, and no use for them if it did.
 	if req.NoPlugins || req.Agent != agentClaude {

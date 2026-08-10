@@ -74,9 +74,22 @@ func (s *Server) handleStartWorktreeSession(w http.ResponseWriter, r *http.Reque
 		writeError(w, statusFor(err), err)
 		return
 	}
+	if sb.IsBase {
+		writeError(w, statusFor(manager.ErrBaseSandbox), manager.ErrBaseSandbox)
+		return
+	}
 	if sb.Workspace == "" {
 		writeError(w, http.StatusBadRequest,
 			errors.New("this sandbox has no workspace mounted, so there is nothing to make a worktree of"))
+		return
+	}
+	// A clone sandbox's checkout is inside the container, where git on this
+	// machine cannot make a worktree of it. The project's own folder can be
+	// branched instead, from the new-session dialog.
+	if sb.Clone {
+		writeError(w, http.StatusBadRequest, errors.New(
+			"this sandbox works in a clone of the project made inside it, which this machine's git cannot"+
+				" make a worktree of: start a worktree session from the project instead"))
 		return
 	}
 
@@ -102,7 +115,7 @@ func (s *Server) handleStartWorktreeSession(w http.ResponseWriter, r *http.Reque
 	created, err := s.mgr.CreateSandbox(manager.CreateSandboxRequest{
 		// Named here rather than by the caller: what a worktree sandbox is
 		// called is this manager's business, not the browser's.
-		Name:      manager.DefaultWorktreeSandboxName(s.worktreeProjectName(sb)),
+		Name:      manager.DefaultProjectSandboxName(s.worktreeProjectName(sb)),
 		Agent:     sb.Agent,
 		Workspace: tree.Path,
 		// What the source sandbox had, plus the repository the worktree belongs

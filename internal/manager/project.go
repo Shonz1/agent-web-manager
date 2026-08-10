@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
@@ -16,16 +17,23 @@ import (
 var ErrProjectNotFound = errors.New("project not found")
 
 // Project is a folder the user works in. It is the durable, user-facing
-// container for sessions: unlike a Sandbox, it carries no agent of its own.
-// A project has at most one sandbox mounted directly on its folder — made
-// the first time a session is started in it without a worktree, and reused
-// by every such session after — plus one sandbox per session given a
-// worktree of its own. Both kinds are an implementation detail the project
-// view hides; see EnsureProjectSandbox.
+// container for sessions, and it owns three kinds of sandbox, all of which
+// the project view treats as an implementation detail:
+//
+//   - the base sandbox, mounted on the project's folder, made with the
+//     project and never worked in — see EnsureBaseSandbox;
+//   - one clone sandbox per plain session, cloned from the base, holding a
+//     git clone of the folder rather than the folder itself — see
+//     CreateSessionSandbox;
+//   - one sandbox per session given a worktree of its own.
+//
+// The agent is the project's, not the sandbox's: it is chosen when the
+// project is created and every sandbox under it is built for it.
 type Project struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
+	Agent     string    `json:"agent"`
 	CreatedAt time.Time `json:"createdAt"`
 	// LastActivityAt is the last time a person used any session in any of this
 	// project's sandboxes — the same idea as Sandbox.LastActivityAt, and what
@@ -47,15 +55,24 @@ type ProjectView struct {
 type CreateProjectRequest struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
+	// Agent every sandbox in the project is built for. It is asked for here
+	// rather than per session because a session's sandbox is a clone of the
+	// project's base one, and a clone cannot be of a different agent than
+	// what it was cloned from.
+	Agent string `json:"agent"`
 }
 
-// CreateProject registers a project. No sandbox is made yet: one is created
-// the first time a session is started in it, by EnsureProjectSandbox or the
-// worktree session flow.
+// CreateProject registers a project. Its base sandbox is not made here — see
+// EnsureBaseSandbox, which the caller runs once the project exists, so that
+// an image pull does not hold up the answer to "create this project".
 func (m *Manager) CreateProject(req CreateProjectRequest) (*Project, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, fmt.Errorf("project name is required")
+	}
+	agent := strings.TrimSpace(req.Agent)
+	if !sbx.ValidAgent(agent) {
+		return nil, fmt.Errorf("unknown agent %q", agent)
 	}
 	path, err := resolveWorkspace(req.Path)
 	if err != nil {
@@ -67,6 +84,7 @@ func (m *Manager) CreateProject(req CreateProjectRequest) (*Project, error) {
 		ID:             newID(),
 		Name:           name,
 		Path:           path,
+		Agent:          agent,
 		CreatedAt:      now,
 		LastActivityAt: now,
 	}
@@ -153,7 +171,9 @@ func (m *Manager) DeleteProject(ctx context.Context, id string) ([]Sandbox, erro
 		if sb.IsWorktree {
 			worktrees = append(worktrees, *sb)
 		}
-		if err := m.DeleteSandbox(ctx, sb.ID); err != nil {
+		// deleteSandbox rather than DeleteSandbox: the base sandbox is
+		// refused everywhere else, and here is where it is meant to go.
+		if err := m.deleteSandbox(ctx, sb); err != nil {
 			return worktrees, err
 		}
 	}
@@ -161,6 +181,10 @@ func (m *Manager) DeleteProject(ctx context.Context, id string) ([]Sandbox, erro
 	m.mu.Lock()
 	delete(m.projects, id)
 	m.mu.Unlock()
+
+	m.baseMu.Lock()
+	delete(m.baseLocks, id)
+	m.baseMu.Unlock()
 
 	if err := m.saveProjects(); err != nil {
 		return worktrees, err
@@ -181,51 +205,128 @@ func (m *Manager) projectSandboxes(projectID string) []*Sandbox {
 	return out
 }
 
-// mainSandbox returns the project's non-worktree sandbox, or nil if it has
-// not made one yet.
-func (m *Manager) mainSandbox(projectID string) *Sandbox {
+// BaseSandbox returns the project's base sandbox, or nil if it has not been
+// made yet — which is only ever briefly, while EnsureBaseSandbox is still
+// building it.
+func (m *Manager) BaseSandbox(projectID string) *Sandbox {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, sb := range m.sandboxes {
-		if sb.ProjectID == projectID && !sb.IsWorktree {
+		if sb.ProjectID == projectID && sb.IsBase {
 			return sb
 		}
 	}
 	return nil
 }
 
-// EnsureProjectSandbox returns the project's main sandbox, creating it with
-// the given agent if this is the first session started in the project
-// without a worktree. Every later call reuses that same sandbox regardless
-// of the agent it names: a project has only one non-worktree agent, fixed by
-// whichever session made the sandbox.
-func (m *Manager) EnsureProjectSandbox(ctx context.Context, projectID, agent string) (*Sandbox, error) {
-	if sb := m.mainSandbox(projectID); sb != nil {
-		return sb, nil
-	}
+// EnsureBaseSandbox returns the project's base sandbox, making it if the
+// project has none — at project creation, and again at the start of any
+// session that finds it gone, since it is what every session sandbox is
+// cloned from. A record that survived while the container behind it did not
+// is rebuilt rather than duplicated.
+//
+// Calls for one project are serialised: the first session started in a brand
+// new project races the create that made it, and both want the same sandbox.
+func (m *Manager) EnsureBaseSandbox(ctx context.Context, projectID string) (*Sandbox, error) {
 	p, err := m.GetProject(projectID)
 	if err != nil {
 		return nil, err
 	}
-	if !sbx.ValidAgent(agent) {
-		return nil, fmt.Errorf("unknown agent %q", agent)
+
+	lock := m.baseLock(projectID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if sb := m.BaseSandbox(projectID); sb != nil {
+		// The record is here; the container may not be, if sbx was pruned or
+		// the sandbox removed by hand.
+		if err := m.ensureSandbox(ctx, sb); err != nil {
+			return nil, err
+		}
+		return sb, nil
 	}
 	// Unnamed: CreateSandbox derives "<agent>-<dir>" from the workspace and
 	// numbers it past anything already holding that name.
-	sb, err := m.CreateSandbox(CreateSandboxRequest{
-		Agent:     agent,
+	return m.CreateSandbox(CreateSandboxRequest{
+		Agent:     p.Agent,
 		Workspace: p.Path,
 		ProjectID: p.ID,
+		IsBase:    true,
 	})
-	if errors.Is(err, ErrExists) {
-		// Two sessions started in the same project at once — the loser here
-		// is not the loser overall, since the sandbox that won is exactly
-		// what this call would have made.
-		if existing := m.mainSandbox(projectID); existing != nil {
-			return existing, nil
+}
+
+// EnsureBaseSandboxes makes the base sandbox of every project that is
+// missing one. It runs at startup, so a project created against an sbx that
+// was not working — or one from before base sandboxes existed — gets its
+// base sandbox without waiting for someone to start a session in it.
+//
+// Failures are returned per project rather than stopping the sweep: one
+// project whose folder has gone must not leave every other project without a
+// base sandbox.
+func (m *Manager) EnsureBaseSandboxes(ctx context.Context) map[string]error {
+	m.mu.RLock()
+	ids := make([]string, 0, len(m.projects))
+	for id := range m.projects {
+		ids = append(ids, id)
+	}
+	m.mu.RUnlock()
+	sort.Strings(ids)
+
+	errs := map[string]error{}
+	for _, id := range ids {
+		if _, err := m.EnsureBaseSandbox(ctx, id); err != nil {
+			errs[id] = err
 		}
 	}
-	return sb, err
+	return errs
+}
+
+// CreateSessionSandbox makes the sandbox a plain session runs in: a copy of
+// the project's base one, in sbx's clone mode, so its workspace is a git
+// clone of the project folder rather than the folder itself.
+//
+// That is what lets every session have a sandbox of its own without a
+// worktree apiece: several clones of one folder can run at once, and nothing
+// any of them does reaches the host until someone fetches it from the
+// sandbox.
+//
+// clone is false for a project folder that is not a git checkout, which has
+// nothing to clone: those sessions get a sandbox of their own mounted on the
+// folder itself, and share it the way two shells on one machine do. Only the
+// caller can tell, which is why it is asked rather than worked out here.
+func (m *Manager) CreateSessionSandbox(ctx context.Context, projectID string, clone bool) (*Sandbox, error) {
+	p, err := m.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	base, err := m.EnsureBaseSandbox(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return m.CreateSandbox(CreateSandboxRequest{
+		Name:      DefaultProjectSandboxName(p.Name),
+		Agent:     p.Agent,
+		Workspace: p.Path,
+		ProjectID: p.ID,
+		Clone:     clone,
+		// The whole point of the base sandbox: what a session inherits comes
+		// from a settled sandbox of this project's own rather than from this
+		// machine, or from whichever session sandbox happened to be first.
+		PluginsFrom: base.Name,
+	})
+}
+
+// baseLock returns the mutex serialising base sandbox creation for one
+// project, making it on first use.
+func (m *Manager) baseLock(projectID string) *sync.Mutex {
+	m.baseMu.Lock()
+	defer m.baseMu.Unlock()
+	lock, ok := m.baseLocks[projectID]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.baseLocks[projectID] = lock
+	}
+	return lock
 }
 
 // uniqueSandboxName appends a number to base until it names no sandbox this

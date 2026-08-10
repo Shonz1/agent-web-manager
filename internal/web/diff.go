@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/oleksiiipatov/agent-web-manager/internal/git"
+	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
 )
 
 // diffTimeout bounds one git invocation. A cold repository on a network mount
@@ -27,9 +28,10 @@ type changesResponse struct {
 
 // handleDiff lists what has changed in a sandbox's workspace.
 //
-// The workspace is read on the host rather than through the sandbox: it is the
-// same bind-mounted directory either way, and reading it here works whether or
-// not the container is running.
+// A bind-mounted workspace is read on the host: it is the same directory
+// either way, and reading it here works whether or not the container is
+// running. A clone sandbox's workspace exists only inside the container, so
+// that one is read through sbx; see gitFor.
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		writeError(w, http.StatusForbidden, fmt.Errorf("cross-origin request rejected"))
@@ -51,7 +53,7 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), diffTimeout)
 	defer cancel()
 
-	changes, err := s.gitClient().Changes(ctx, sb.Workspace, git.ParseBase(r.URL.Query().Get("base")))
+	changes, err := s.gitFor(sb).Changes(ctx, sb.Workspace, git.ParseBase(r.URL.Query().Get("base")))
 	if errors.Is(err, git.ErrNotRepo) {
 		resp.Message = "This workspace is not a git checkout, so there is nothing to compare."
 		writeJSON(w, http.StatusOK, resp)
@@ -93,7 +95,7 @@ func (s *Server) handleDiffFile(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), diffTimeout)
 	defer cancel()
 
-	diff, err := s.gitClient().FileDiff(ctx, sb.Workspace, git.ParseBase(query.Get("base")), path, query.Get("old"))
+	diff, err := s.gitFor(sb).FileDiff(ctx, sb.Workspace, git.ParseBase(query.Get("base")), path, query.Get("old"))
 	switch {
 	case errors.Is(err, git.ErrNotRepo), errors.Is(err, git.ErrNoSuchFile):
 		writeError(w, http.StatusNotFound, err)
@@ -111,4 +113,23 @@ func (s *Server) gitClient() *git.Client {
 		return git.New("")
 	}
 	return s.git
+}
+
+// gitFor returns the client that can see this sandbox's checkout: the plain
+// one for a workspace mounted from the host, and one running inside the
+// container for a clone sandbox, whose checkout was made in there and is on
+// the host nowhere at all.
+func (s *Server) gitFor(sb *manager.Sandbox) *git.Client {
+	if !sb.Clone {
+		return s.gitClient()
+	}
+	return s.gitClient().InSandbox(s.sbxBin(), sb.Name)
+}
+
+// sbxBin is the sbx binary this server was configured with.
+func (s *Server) sbxBin() string {
+	if s.client == nil {
+		return ""
+	}
+	return s.client.Bin
 }
