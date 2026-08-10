@@ -91,8 +91,9 @@ Select the sandbox and start as many terminals as you want:
 - **Start agent** runs the sandbox's own agent (`sbx run --name <name>`, with
   any arguments you pass after `--`). Each attachment gets its own agent
   process on its own TTY, so several can work in one sandbox at once.
-- **Start shell** opens an interactive shell beside them (`sbx exec -it
-  <name> bash`) — run a build in one while the agents work in others.
+- **Shell**, above a session, opens an interactive shell beside it (`sbx exec
+  -it <name> bash`) in the same sandbox that session is running in, and attaches
+  to it — run a build in one while the agents work in others.
 
 Neither is limited. Anything a session draws — full TUIs included — renders in
 the terminal. Sessions appear nested under their sandbox in the sidebar; click
