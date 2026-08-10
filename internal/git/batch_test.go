@@ -17,10 +17,7 @@ import (
 func countingSbx(t *testing.T, tally string) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "sbx")
-	script := "#!/bin/sh\n" +
-		"echo 'Sandbox demo started successfully'\n" +
-		"echo call >>'" + tally + "'\n" +
-		"shift 2\nexec \"$@\"\n"
+	script := strings.Replace(sbxScript, "shift 2\n", "echo call >>'"+tally+"'\nshift 2\n", 1)
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +82,56 @@ func TestASandboxReadCostsOneRoundTripPerThingRead(t *testing.T) {
 		}
 		if n := calls(t, tally) - before; n != 1 {
 			t.Errorf("opening %s took %d round trips, want 1", file, n)
+		}
+	}
+}
+
+// Most files were not renamed, so most file diffs pass an empty old path — and
+// sbx refuses a command with an empty element in it rather than running it,
+// which made opening any file in a clone sandbox fail with "400 Bad Request:
+// cmd element 12 is empty". Nothing about the arguments here is optional to
+// sbx, so the empty one has to be carried rather than passed.
+func TestASandboxOpensAFileThatWasNotRenamed(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "keep.txt", "one\nTWO\nthree\n")
+	c := New("git").InSandbox(fakeSbx(t), "demo")
+
+	diff, err := c.FileDiff(context.Background(), dir, BaseHead, "keep.txt", "")
+	if err != nil {
+		t.Fatalf("opening a file with no old path: %v", err)
+	}
+	if len(diff.Hunks) == 0 {
+		t.Error("the diff came back with no hunks")
+	}
+}
+
+// A leading colon is two hazards at once, and this is both of them on one
+// file. It is the mark sandboxCommand puts in front of every argument, which
+// has to come off exactly once or the file is opened by a name one character
+// short of its own; and it is what makes a pathspec magic to git, which
+// matches nothing and reads as a file that is not there. Neither is peculiar
+// to a sandbox, so both readings are held to it.
+func TestAFileWhoseNameStartsWithAColonOpens(t *testing.T) {
+	name := ":odd.txt"
+	if argMark != ":" {
+		t.Fatalf("argMark = %q: this test is about a colon being both the mark and pathspec magic", argMark)
+	}
+	dir := repo(t)
+	write(t, dir, name, "one\ntwo\n")
+
+	for label, c := range map[string]*Client{
+		"here":         New("git"),
+		"in a sandbox": New("git").InSandbox(fakeSbx(t), "demo"),
+	} {
+		got, err := c.Changes(context.Background(), dir, BaseHead)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		if s := changed(t, got, name).Status; s != "untracked" {
+			t.Errorf("%s: %q came back as %q, want untracked", label, name, s)
+		}
+		if _, err := c.FileDiff(context.Background(), dir, BaseHead, name, ""); err != nil {
+			t.Errorf("%s: opening %q: %v", label, name, err)
 		}
 	}
 }

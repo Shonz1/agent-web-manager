@@ -23,6 +23,22 @@ import (
 // NUL-separated lists of paths, and a path may contain any byte but NUL,
 // newlines included.
 
+// argMark is what sandboxCommand puts in front of every argument so that none
+// of them reaches sbx empty, and unmarkArgs is what takes it off again before
+// any of the scripts below sees its parameters.
+//
+// The loop rotates the list rather than rebuilding it: each parameter is
+// shifted off the front and its unmarked self appended to the back, so one
+// pass over the original arguments leaves the list holding all of them,
+// unmarked, in the order they were given. "for a do" iterates the parameters
+// as they stood when it started, which is what makes rewriting them under it
+// safe. Only the first mark is removed, so an argument that itself starts with
+// one arrives intact.
+const (
+	argMark    = ":"
+	unmarkArgs = `for a do shift; set -- "$@" "${a#` + argMark + `}"; done`
+)
+
 // probeScript reads what a repository is: where its top is, what is on HEAD,
 // what is checked out, and what this branch appears to have grown out of.
 //

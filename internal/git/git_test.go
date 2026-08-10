@@ -484,8 +484,9 @@ func TestCommandRunsInsideASandbox(t *testing.T) {
 		"exec demo-9f2c env",
 		"GIT_OPTIONAL_LOCKS=0",
 		// Not the -git binary: that one is on this machine, and the sandbox
-		// has its own.
-		"git -C /work/app diff --numstat",
+		// has its own. Each argument carries argMark, which the script takes
+		// off before git is run — see sandboxCommand.
+		":git :-C :/work/app :diff :--numstat",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("argv %q does not contain %q", line, want)
@@ -496,13 +497,32 @@ func TestCommandRunsInsideASandbox(t *testing.T) {
 // fakeSbx writes a stand-in for the sbx binary: one that prints the line sbx
 // prints when the exec had to start the container first, and then runs the
 // command it was handed here rather than in a container.
+// sbxScript stands in for the "sbx" binary. The arguments are "exec <sandbox>
+// <command>…", and the command is what this is standing in for the container
+// to run.
+//
+// It refuses an empty element of that command the way the real sbx does,
+// rather than running it: an empty argument crosses a fork and an exec on this
+// machine without complaint, so a fake that passed it on would say every one of
+// these reads worked while the real thing answered 400 to the ones that matter.
+const sbxScript = `#!/bin/sh
+echo 'Sandbox demo started successfully'
+shift 2
+n=0
+for a do
+	n=$((n + 1))
+	if [ -z "$a" ]; then
+		echo "ERROR: request failed: 400 Bad Request: cmd element $n is empty" >&2
+		exit 1
+	fi
+done
+exec "$@"
+`
+
 func fakeSbx(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "sbx")
-	// The arguments are "exec <sandbox> <command>…", and the command is what
-	// this is standing in for the container to run.
-	script := "#!/bin/sh\necho 'Sandbox demo started successfully'\nshift 2\nexec \"$@\"\n"
-	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(bin, []byte(sbxScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return bin
