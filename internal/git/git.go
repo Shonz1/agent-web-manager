@@ -639,12 +639,22 @@ func (c *Client) command(ctx context.Context, dir string, args []string) *exec.C
 // as its positional parameters and the marker printed ahead of anything it
 // writes. The environment is carried as an "env" prefix, since that does not
 // cross "sbx exec" either.
+//
+// Every argument goes over with argMark in front of it and has it taken off
+// again on the other side. sbx refuses a command with an empty element in it —
+// "400 Bad Request: cmd element N is empty" — and an argument that is
+// legitimately empty is an ordinary thing to pass: the old path of a file that
+// was not renamed is one, and it made opening any file in a clone sandbox fail.
+// Marked, there is no empty element left for sbx to object to.
 func (c *Client) sandboxCommand(ctx context.Context, script string, args ...string) *exec.Cmd {
 	argv := append([]string{"exec", c.sandbox, "env"}, gitVars()...)
 	// The "sh" after the script is $0: what follows it is $1 onwards, which is
 	// where a script expects to find its arguments.
-	argv = append(argv, "sh", "-c", fmt.Sprintf("printf '%%s\\n' %q\n%s", sandboxMarker, script), "sh")
-	return exec.CommandContext(ctx, c.sbxBin, append(argv, args...)...)
+	argv = append(argv, "sh", "-c", fmt.Sprintf("printf '%%s\\n' %q\n%s\n%s", sandboxMarker, unmarkArgs, script), "sh")
+	for _, a := range args {
+		argv = append(argv, argMark+a)
+	}
+	return exec.CommandContext(ctx, c.sbxBin, argv...)
 }
 
 func (c *Client) bin() string {
@@ -670,6 +680,11 @@ func gitVars() []string {
 		// Nothing here can answer a prompt, and a git that waits for one would
 		// hang until the request's own deadline.
 		"GIT_TERMINAL_PROMPT=0",
+		// Every path reaching git here is a path git itself just reported, and
+		// is meant as that file and nothing else. Without this a leading colon
+		// makes one pathspec magic instead — ":odd.txt" matches nothing, so a
+		// file whose name begins with one reads as missing rather than opening.
+		"GIT_LITERAL_PATHSPECS=1",
 		"GIT_PAGER=cat",
 		"LC_ALL=C",
 	}

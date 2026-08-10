@@ -714,6 +714,58 @@ manager can already start an agent with full access to your source, so the
 loopback bind is what is protecting you, not the endpoints — which is the same
 reason not to expose it on a public interface.
 
+## Contributing
+
+Work happens on a branch and arrives through a pull request; `main` is not
+committed to directly.
+
+### Branches
+
+`<type>/<short-description>`, where the type is one of the commit types below
+and the description is lowercase words joined by hyphens — `feat/clone-mode`,
+`fix/session-sorting`, `refactor/remove-advanced-menu`. Say what the branch is
+for, not which files it touches, and keep it short enough to read in a `git
+branch` listing. Some older branches use `ref/` for `refactor/`; new ones spell
+it out, so a branch and its commits carry the same word.
+
+### Commits
+
+[Conventional Commits](https://www.conventionalcommits.org): a `<type>:`
+prefix, then a subject in the imperative mood, no trailing full stop.
+
+```
+feat(diff): read a sandbox's diff in a handful of round trips
+fix(sandbox): keep a session's clone when the base sandbox restarts
+docs: describe how a session decides it is waiting on you
+```
+
+| Type | For |
+| --- | --- |
+| `feat` | New behaviour someone using the manager would notice |
+| `fix` | A defect in behaviour that already shipped |
+| `refactor` | A change that leaves behaviour alone |
+| `docs` | This README and other prose |
+| `test` | Tests, and nothing else |
+| `chore` | Build, tooling, dependencies, repository housekeeping |
+| `perf` | A change made for speed |
+
+The scope in parentheses is optional and, when there is one, names the package
+it lands in — `sbx`, `git`, `manager`, `notify`, `web`. A change that breaks an
+API takes a `!` before the colon (`feat(web)!: …`) and explains itself in a
+`BREAKING CHANGE:` footer.
+
+The body is for why, which the diff cannot say; the subject is for what, which
+it can. Pull requests are squashed, so the title is the commit message that
+lands and is held to the same rules — the `(#12)` on each commit in the history
+is the merge adding it, not something to write yourself.
+
+### Before opening a pull request
+
+```bash
+make check   # gofmt, go vet, go test ./...
+make build
+```
+
 ## Layout
 
 ```
