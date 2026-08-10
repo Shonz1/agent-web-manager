@@ -146,13 +146,12 @@ function projectSessionTitle(s) {
   return sessionSubtitle(s) || sessionLabel(s);
 }
 
-// branch is the project session's own subtitle in place of the context line:
-// which branch it is on says more here than what it is doing, since the tree
-// already names it after that.
-// A session's second line: the branch its sandbox is on, or — for one
-// working in a clone made inside its sandbox, whose branch can only be read
-// in there — what kind of workspace it has instead.
-function sessionSubtitle(stub) {
+// A project session's second line stands in for the context line above: which
+// branch it is on says more here than what it is doing, since the tree already
+// names it after that. A session working in a clone made inside its sandbox
+// has a branch that can only be read in there, so it says what kind of
+// workspace it has instead.
+function projectSessionSubtitle(stub) {
   if (stub.branch) return stub.branch;
   return stub.clone ? 'clone' : '';
 }
@@ -207,7 +206,7 @@ function projectListSignature() {
   const parts = state.projects.map((p) => {
     const rows = (p.sessions || []).map((stub) => {
       const s = findSession(stub.id) || stub;
-      return `${s.id}:${projectSessionTitle(s)}:${sessionSubtitle(stub)}:${s.status}:${s.activity || ''}`;
+      return `${s.id}:${projectSessionTitle(s)}:${projectSessionSubtitle(stub)}:${s.status}:${s.activity || ''}`;
     });
     return [p.id, p.name, p.path, rows.join(',')].join(' ');
   });
@@ -272,7 +271,7 @@ function renderProjectList(force) {
         sdot.className = dotClass(s);
         sdot.title = dotTitle(s);
 
-        srow.append(sdot, projectSessionTextEl(s, sessionSubtitle(stub)));
+        srow.append(sdot, projectSessionTextEl(s, projectSessionSubtitle(stub)));
         srow.addEventListener('click', () => selectSession(s.id));
         rows.append(srow);
       }
@@ -352,7 +351,7 @@ function renderProjectPanel(p) {
       ? `exited (${s.exitCode})`
       : s.status;
 
-    card.append(dot, projectSessionTextEl(s, sessionSubtitle(stub)), activityBadge(s), badge);
+    card.append(dot, projectSessionTextEl(s, projectSessionSubtitle(stub)), activityBadge(s), badge);
     card.addEventListener('click', () => selectSession(s.id));
     li.append(card);
     list.append(li);
@@ -504,16 +503,18 @@ function renderSandboxPanel(b) {
   const sessions = b.sessions || [];
   const gone = b.status === 'missing' && b.adopted;
 
-  // Nothing can be done to a base sandbox: it is only ever cloned from, and
-  // the server refuses all three of these. The buttons say so before they are
-  // pressed rather than after.
+  // A base sandbox is only ever cloned from, so the server refuses to run
+  // anything in it or to delete it on its own; the buttons say so before they
+  // are pressed rather than after. Stopping it is allowed — nothing in there
+  // is working, and whatever needs it next starts it again.
   const base = !!b.isBase;
   $('btn-start-agent').disabled = gone || base;
-  $('btn-stop-sandbox').disabled = b.status === 'missing' || base;
+  $('btn-stop-sandbox').disabled = b.status === 'missing';
   $('btn-delete-sandbox').disabled = base;
-  for (const id of ['btn-start-agent', 'btn-stop-sandbox', 'btn-delete-sandbox']) {
+  for (const id of ['btn-start-agent', 'btn-delete-sandbox']) {
     $(id).title = base ? BASE_SANDBOX_NOTE : BUTTON_TITLES[id];
   }
+  $('btn-stop-sandbox').title = BUTTON_TITLES['btn-stop-sandbox'];
 
   const list = $('sb-sessions');
   list.textContent = '';

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -227,15 +228,21 @@ func (m *Manager) BaseSandbox(projectID string) *Sandbox {
 //
 // Calls for one project are serialised: the first session started in a brand
 // new project races the create that made it, and both want the same sandbox.
+//
+// The project is looked up again on either side of the create, because a
+// create is an image pull's worth of minutes and DeleteProject does not wait
+// for one. A base sandbox registered after its project has gone is a sandbox
+// nothing will ever collect: DeleteSandbox refuses a base sandbox, and there
+// is no longer a project to delete it with.
 func (m *Manager) EnsureBaseSandbox(ctx context.Context, projectID string) (*Sandbox, error) {
+	lock := m.baseLock(projectID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	p, err := m.GetProject(projectID)
 	if err != nil {
 		return nil, err
 	}
-
-	lock := m.baseLock(projectID)
-	lock.Lock()
-	defer lock.Unlock()
 
 	if sb := m.BaseSandbox(projectID); sb != nil {
 		// The record is here; the container may not be, if sbx was pruned or
@@ -247,12 +254,29 @@ func (m *Manager) EnsureBaseSandbox(ctx context.Context, projectID string) (*San
 	}
 	// Unnamed: CreateSandbox derives "<agent>-<dir>" from the workspace and
 	// numbers it past anything already holding that name.
-	return m.CreateSandbox(CreateSandboxRequest{
+	sb, err := m.CreateSandbox(CreateSandboxRequest{
 		Agent:     p.Agent,
 		Workspace: p.Path,
 		ProjectID: p.ID,
 		IsBase:    true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.GetProject(projectID); err != nil {
+		// The project went while this was being built, after DeleteProject had
+		// already been past the list this sandbox has just been added to. It
+		// is deleted here or it is never deleted at all — on a context of its
+		// own, since the one that asked for the sandbox is as likely as not
+		// the request that has just been answered.
+		cleanup, cancel := context.WithTimeout(context.Background(), removeTimeout)
+		defer cancel()
+		if derr := m.deleteSandbox(cleanup, sb); derr != nil {
+			log.Printf("project %s: its base sandbox %s outlived it: %v", projectID, sb.Name, derr)
+		}
+		return nil, err
+	}
+	return sb, nil
 }
 
 // EnsureBaseSandboxes makes the base sandbox of every project that is

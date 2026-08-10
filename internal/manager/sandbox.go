@@ -34,8 +34,8 @@ type Sandbox struct {
 	ProjectID string `json:"projectId,omitempty"`
 	// IsBase marks a project's base sandbox: the one made with the project
 	// itself, mounted on its folder, and never used for anything. Nothing is
-	// started in it and it cannot be stopped or deleted on its own — it is
-	// there to be the thing every session sandbox is cloned from, so what a
+	// started in it and it cannot be deleted on its own — it is there to be
+	// the thing every session sandbox is cloned from, so what a
 	// session inherits is a settled sandbox rather than whichever one
 	// happened to be made first. A project has exactly one; see
 	// EnsureBaseSandbox.

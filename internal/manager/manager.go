@@ -27,17 +27,24 @@ var (
 	ErrSandboxNotFound = errors.New("sandbox not found")
 	ErrSessionNotFound = errors.New("session not found")
 	ErrExists          = errors.New("a sandbox with that name already exists")
-	// ErrBaseSandbox rejects anything asked of a project's base sandbox. It
-	// is the sandbox every session sandbox is cloned from, so running in it,
-	// stopping it or deleting it would change what the next session inherits
-	// — and there is nothing it does that a session sandbox does not do
-	// better. It goes when its project goes.
-	ErrBaseSandbox = errors.New("this is the project's base sandbox: it is only ever cloned from, so nothing can be run in it and it cannot be stopped or deleted on its own")
+	// ErrBaseSandbox rejects working in or destroying a project's base
+	// sandbox. It is the sandbox every session sandbox is cloned from, so
+	// running in it would change what the next session inherits, and deleting
+	// it would leave the project with nothing to clone — and there is nothing
+	// it does that a session sandbox does not do better. It goes when its
+	// project goes. Stopping it is allowed: it holds no work, and whatever
+	// needs it next starts it again.
+	ErrBaseSandbox = errors.New("this is the project's base sandbox: it is only ever cloned from, so nothing can be run in it and it cannot be deleted on its own")
 )
 
 // createTimeout covers an "sbx create" that has to pull an agent image, which
 // is far longer than any other sbx call the manager makes.
 const createTimeout = 10 * time.Minute
+
+// removeTimeout covers an "sbx rm" the manager does on its own account rather
+// than on behalf of a request: tearing a container down asks nothing of the
+// network, so it is the same minute the API gives a delete someone asked for.
+const removeTimeout = time.Minute
 
 // eventBuffer is how many notification events a subscriber can fall behind by.
 // They arrive minutes apart at worst and are held back by a dwell before they
@@ -320,13 +327,17 @@ func (m *Manager) ManagedNames() map[string]bool {
 
 // StopSandbox ends every session in the sandbox and stops the container,
 // keeping its state.
+//
+// A base sandbox is stopped like any other. Nothing runs in one, so stopping
+// it costs nothing and ends no work — and refusing would leave every project
+// holding a container up for as long as the project exists, with no way to
+// put it down. What needs it next starts it again: "sbx exec" does that of
+// its own accord, and a create clones from the sandbox rather than from
+// anything running in it.
 func (m *Manager) StopSandbox(ctx context.Context, id string) error {
 	sb, err := m.GetSandbox(id)
 	if err != nil {
 		return err
-	}
-	if sb.IsBase {
-		return ErrBaseSandbox
 	}
 	for _, s := range m.sandboxSessions(sb.ID) {
 		s.terminate()
@@ -529,9 +540,18 @@ func (m *Manager) uniqueTitleLocked(sb *Sandbox, kind Kind, agentArgs []string) 
 	}
 }
 
-// ensureSandbox recreates a sandbox that sbx no longer has. An adopted
-// sandbox is only ever a mirror of one someone else set up, so rebuilding it
-// from the metadata read back would quietly produce a different sandbox.
+// ensureSandbox recreates a sandbox that sbx no longer has. It is only ever
+// worth doing for a sandbox whose workspace is somewhere else: rebuilt from
+// this record, it is mounted on the same folder and holds the same files, so
+// the session that starts in it is the session that would have started in the
+// one that is gone.
+//
+// An adopted sandbox is only ever a mirror of one someone else set up, so
+// rebuilding it from the metadata read back would quietly produce a different
+// sandbox. A clone sandbox is worse: its workspace was made inside the
+// container, so a rebuild is a fresh clone of the project folder, holding none
+// of the work done in it — a sandbox that looks like the same one and has
+// forgotten everything. Neither is done on the way to starting a terminal.
 func (m *Manager) ensureSandbox(ctx context.Context, sb *Sandbox) error {
 	_, exists, err := m.client.Get(ctx, sb.Name)
 	if err != nil {
@@ -543,6 +563,9 @@ func (m *Manager) ensureSandbox(ctx context.Context, sb *Sandbox) error {
 	if sb.Adopted {
 		return fmt.Errorf("sandbox %q no longer exists and was not created by this manager, so it cannot be recreated here", sb.Name)
 	}
+	if sb.Clone {
+		return fmt.Errorf("sandbox %q no longer exists, and its workspace was a clone that only ever existed inside it: rebuilding it would give you an empty one under the same name, so anything not pushed from it is gone — delete it and start a new session", sb.Name)
+	}
 
 	createCtx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
@@ -552,10 +575,6 @@ func (m *Manager) ensureSandbox(ctx context.Context, sb *Sandbox) error {
 		Workspace:       sb.Workspace,
 		ExtraWorkspaces: sb.ExtraWorkspaces,
 		Publish:         sb.Publish,
-		// A clone sandbox rebuilt is a fresh clone of the workspace as it
-		// stands now: whatever the old container held was only ever inside
-		// it, and it is gone.
-		Clone: sb.Clone,
 	})
 }
 

@@ -115,6 +115,78 @@ func fakeSbx(t *testing.T, running ...string) string {
 	return path
 }
 
+// slowSbx writes a stand-in for the sbx binary whose "create" waits: it
+// touches started and then blocks until release appears, so a test can do
+// something else while a create is in flight. Everything else succeeds
+// silently, and "ls" reports nothing at all.
+func slowSbx(t *testing.T, started, release string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sbx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"create\" ]; then\n" +
+		"  : > " + started + "\n" +
+		"  while [ ! -f " + release + " ]; do sleep 0.01; done\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"ls\" ]; then printf '%s' '{\"sandboxes\":[]}'; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// waitForFile blocks until the path exists, or fails the test.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s never appeared", path)
+}
+
+// A create is an image pull's worth of minutes and DeleteProject does not wait
+// for one, so a project can go while its base sandbox is being built. The
+// sandbox registered afterwards would be one nothing ever removes: it belongs
+// to no project, and DeleteSandbox refuses a base sandbox.
+func TestEnsureBaseSandboxOutlivedByItsProject(t *testing.T) {
+	dir := t.TempDir()
+	started, release := filepath.Join(dir, "creating"), filepath.Join(dir, "release")
+
+	m, err := New(sbx.New(slowSbx(t, started, release)), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.CreateProject(CreateProjectRequest{Name: "demo", Path: t.TempDir(), Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.EnsureBaseSandbox(context.Background(), p.ID)
+		done <- err
+	}()
+
+	waitForFile(t, started)
+	if _, err := m.DeleteProject(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-done; !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("EnsureBaseSandbox = %v, want ErrProjectNotFound", err)
+	}
+	if left := m.projectSandboxes(p.ID); len(left) != 0 {
+		t.Errorf("left behind %+v, which nothing can delete now the project has gone", left)
+	}
+}
+
 // The only way to register state without an sbx to create it: written
 // straight into the file the next manager loads.
 func writeJSONFile(t *testing.T, path string, v any) {
@@ -351,9 +423,10 @@ func TestEnsureBaseSandboxIgnoresAProjectsOtherSandboxes(t *testing.T) {
 	}
 }
 
-// Nothing may be run in, stopped, or deleted on the base sandbox: it is what
-// every session sandbox is cloned from, and all three would change what the
-// next session inherits.
+// Nothing may be run in or deleted on the base sandbox: it is what every
+// session sandbox is cloned from, and both would change what the next session
+// inherits. Stopping it is ordinary — nothing in there is working, and a
+// project would otherwise hold a container up for as long as it existed.
 func TestBaseSandboxRefusesEverythingButProjectDeletion(t *testing.T) {
 	m, err := New(sbx.New(filepath.Join(t.TempDir(), "no-such-sbx")), t.TempDir())
 	if err != nil {
@@ -367,8 +440,10 @@ func TestBaseSandboxRefusesEverythingButProjectDeletion(t *testing.T) {
 	if _, err := m.StartSession(ctx, base.ID, StartSessionRequest{Kind: KindShell}); !errors.Is(err, ErrBaseSandbox) {
 		t.Errorf("StartSession: %v, want ErrBaseSandbox", err)
 	}
-	if err := m.StopSandbox(ctx, base.ID); !errors.Is(err, ErrBaseSandbox) {
-		t.Errorf("StopSandbox: %v, want ErrBaseSandbox", err)
+	// The stop reaches sbx, which is not there in this test: what matters is
+	// that it was not turned away before it got that far.
+	if err := m.StopSandbox(ctx, base.ID); errors.Is(err, ErrBaseSandbox) {
+		t.Error("StopSandbox refused the base sandbox; stopping one is allowed")
 	}
 	if err := m.DeleteSandbox(ctx, base.ID); !errors.Is(err, ErrBaseSandbox) {
 		t.Errorf("DeleteSandbox: %v, want ErrBaseSandbox", err)

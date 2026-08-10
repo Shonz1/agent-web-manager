@@ -56,6 +56,14 @@ const (
 	binarySniff = 8000
 )
 
+// sandboxMarker is printed inside the sandbox, ahead of the command being run
+// there, so that what sbx writes to that same stream — "Sandbox … started
+// successfully", when the exec had to start the container first — can be told
+// from the output being read, and dropped. A diff says nothing about itself
+// that could be looked for instead, and glued to that line it parses as
+// nonsense.
+const sandboxMarker = "--- sandbox output follows ---"
+
 // Base is what the working tree is compared against.
 type Base string
 
@@ -211,8 +219,7 @@ func (c *Client) Changes(ctx context.Context, dir string, base Base) (Changes, e
 		return Changes{}, err
 	}
 	for _, name := range splitZ(others) {
-		added, binary := c.countAdded(ctx, root, name)
-		files = append(files, Change{Path: name, Status: "untracked", Added: added, Binary: binary})
+		files = append(files, Change{Path: name, Status: "untracked"})
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -220,6 +227,11 @@ func (c *Client) Changes(ctx context.Context, dir string, base Base) (Changes, e
 		files = files[:maxFiles]
 		out.Truncated = true
 	}
+	// Counting an untracked file is a read of its own, so it is left until the
+	// list has been cut down to the files that will be shown: a sandbox full
+	// of build output has tens of thousands of them, and nobody is going to
+	// see past the first two thousand.
+	c.countUntracked(ctx, root, files)
 	out.Files = files
 	return out, nil
 }
@@ -295,13 +307,29 @@ func (c *Client) root(ctx context.Context, dir string) (string, error) {
 	}
 	out, _, err := c.output(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", ErrNotRepo
+		if notRepo(err) {
+			return "", ErrNotRepo
+		}
+		// A sandbox that would not start, or a git that is not installed:
+		// answering ErrNotRepo would have the UI explain that the workspace is
+		// not a checkout, which is a confident answer to a question nothing
+		// managed to ask.
+		return "", err
 	}
 	root := strings.TrimSpace(string(out))
 	if root == "" {
 		return "", ErrNotRepo
 	}
 	return root, nil
+}
+
+// notRepo reports whether a git command failed because there is no repository
+// where it was pointed, rather than failing to run at all. git says which in
+// its own words, and LC_ALL=C is set so the words are these.
+func notRepo(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not a git repository") ||
+		strings.Contains(msg, "not a working tree")
 }
 
 func (c *Client) branch(ctx context.Context, root string) (string, error) {
@@ -413,10 +441,20 @@ func (c *Client) diffOutput(ctx context.Context, dir string, args ...string) ([]
 }
 
 func (c *Client) run(ctx context.Context, dir string, differencesOK bool, args ...string) ([]byte, bool, error) {
+	return c.capture(ctx, strings.Join(args, " "), differencesOK, func(ctx context.Context) *exec.Cmd {
+		return c.command(ctx, dir, args)
+	})
+}
+
+// capture runs one command and returns its stdout, saying whether it had to be
+// cut short at maxOutput. The command is built here rather than handed in
+// ready-made because cutting it short means killing it, and only a command
+// built on this context can be killed.
+func (c *Client) capture(ctx context.Context, label string, differencesOK bool, build func(context.Context) *exec.Cmd) ([]byte, bool, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cmd := c.command(ctx, dir, args)
+	cmd := build(ctx)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -425,7 +463,7 @@ func (c *Client) run(ctx context.Context, dir string, differencesOK bool, args .
 		return nil, false, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, false, fmt.Errorf("git %s: %w", args[0], err)
+		return nil, false, fmt.Errorf("git %s: %w", label, err)
 	}
 
 	// Read one byte past the cap, so a diff that is exactly at it is not
@@ -441,30 +479,47 @@ func (c *Client) run(ctx context.Context, dir string, differencesOK bool, args .
 	waitErr := cmd.Wait()
 
 	if truncated {
-		return data, true, nil
+		out, err := c.fromSandbox(data)
+		return out, true, err
 	}
 	if readErr != nil {
-		return nil, false, fmt.Errorf("git %s: %w", args[0], readErr)
+		return nil, false, fmt.Errorf("git %s: %w", label, readErr)
 	}
 	if waitErr != nil {
 		var ee *exec.ExitError
 		if differencesOK && errors.As(waitErr, &ee) && ee.ExitCode() == 1 && stderr.Len() == 0 {
-			return data, false, nil
+			out, err := c.fromSandbox(data)
+			return out, false, err
 		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return nil, false, fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
+			return nil, false, fmt.Errorf("git %s: %s", label, msg)
 		}
-		return nil, false, fmt.Errorf("git %s: %w", strings.Join(args, " "), waitErr)
+		return nil, false, fmt.Errorf("git %s: %w", label, waitErr)
 	}
-	return data, false, nil
+	out, err := c.fromSandbox(data)
+	return out, false, err
+}
+
+// fromSandbox drops what sbx wrote to stdout ahead of the command it was asked
+// to run. Output from this machine is its own, and comes back untouched.
+func (c *Client) fromSandbox(data []byte) ([]byte, error) {
+	if !c.remote() {
+		return data, nil
+	}
+	marker := []byte(sandboxMarker + "\n")
+	i := bytes.Index(data, marker)
+	if i < 0 {
+		// The command never got as far as its first line, so all that came
+		// back is sbx's, and it is the only account of what went wrong.
+		if said := strings.TrimSpace(string(data)); said != "" {
+			return nil, fmt.Errorf("sandbox %s did not run it: %s", c.sandbox, said)
+		}
+		return nil, fmt.Errorf("sandbox %s did not run it", c.sandbox)
+	}
+	return data[i+len(marker):], nil
 }
 
 // command builds one git invocation, here or inside a sandbox.
-//
-// The sandbox form names the directory with "-C" rather than by running from
-// it, and carries the environment as an "env" prefix: neither the working
-// directory nor the environment of the process spawned here reaches the
-// other side of "sbx exec".
 func (c *Client) command(ctx context.Context, dir string, args []string) *exec.Cmd {
 	if !c.remote() {
 		cmd := exec.CommandContext(ctx, c.bin(), args...)
@@ -472,10 +527,22 @@ func (c *Client) command(ctx context.Context, dir string, args []string) *exec.C
 		cmd.Env = gitEnv()
 		return cmd
 	}
-	argv := append([]string{"exec", c.sandbox, "env"}, gitVars()...)
 	// "git", not c.bin(): the -git flag names a binary on this machine, and
-	// the sandbox has its own.
-	argv = append(argv, "git", "-C", dir)
+	// the sandbox has its own. The directory is named with "-C" rather than by
+	// running from it, since the working directory of the process spawned here
+	// does not reach the other side of "sbx exec".
+	return c.sandboxCommand(ctx, `exec "$@"`, append([]string{"git", "-C", dir}, args...)...)
+}
+
+// sandboxCommand runs one shell script inside the sandbox, with the arguments
+// as its positional parameters and the marker printed ahead of anything it
+// writes. The environment is carried as an "env" prefix, since that does not
+// cross "sbx exec" either.
+func (c *Client) sandboxCommand(ctx context.Context, script string, args ...string) *exec.Cmd {
+	argv := append([]string{"exec", c.sandbox, "env"}, gitVars()...)
+	// The "sh" after the script is $0: what follows it is $1 onwards, which is
+	// where a script expects to find its arguments.
+	argv = append(argv, "sh", "-c", fmt.Sprintf("printf '%%s\\n' %q\n%s", sandboxMarker, script), "sh")
 	return exec.CommandContext(ctx, c.sbxBin, append(argv, args...)...)
 }
 
@@ -714,42 +781,51 @@ func rangeStart(field string, sign byte) int {
 	return n
 }
 
-// countAdded counts what an untracked file adds, and says whether it is one
-// nobody wants rendered as text.
+// countUntracked fills in what each untracked file on the list adds, and marks
+// the ones nobody wants rendered as text.
 //
-// A file on this machine is read directly. One inside a sandbox is counted by
-// the git that can see it, with the same "diff against nothing" FileDiff uses
-// for an untracked file — a count that cannot be had is reported as no lines
-// rather than as a failure, since it is a number beside a filename and the
-// filename is the part that matters.
-func (c *Client) countAdded(ctx context.Context, root, name string) (int, bool) {
-	if !c.remote() {
-		return countLines(filepath.Join(root, name))
+// A file on this machine is read directly. The ones inside a sandbox are
+// counted by the git that can see them, in a single pass: an "sbx exec" costs
+// more than every count it carries put together, and one per file would spend
+// the whole request's budget before the list was drawn. A count that cannot be
+// had leaves the file at no lines rather than failing the list — it is a
+// number beside a filename, and the filename is the part that matters.
+func (c *Client) countUntracked(ctx context.Context, root string, files []Change) {
+	var names []string
+	for i := range files {
+		if files[i].Status != "untracked" {
+			continue
+		}
+		if !c.remote() {
+			files[i].Added, files[i].Binary = countLines(filepath.Join(root, files[i].Path))
+			continue
+		}
+		names = append(names, files[i].Path)
 	}
-	out, _, err := c.diffOutput(ctx, root, "diff", "--no-index", "--numstat", "--no-color", "--", os.DevNull, name)
+	if len(names) == 0 {
+		return
+	}
+
+	out, _, err := c.capture(ctx, "diff --no-index --numstat", false, func(ctx context.Context) *exec.Cmd {
+		return c.sandboxCommand(ctx, countScript, append([]string{root}, names...)...)
+	})
 	if err != nil {
-		return 0, false
+		return
 	}
-	return parseNumstatLine(string(out))
+	_ = applyNumstat(out, files)
 }
 
-// parseNumstatLine reads the "12\t0\tpath" of a single-file numstat. A binary
-// file is "-\t-\tpath", which is git saying there are no lines to count.
-func parseNumstatLine(out string) (int, bool) {
-	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
-	added, _, ok := strings.Cut(line, "\t")
-	if !ok {
-		return 0, false
-	}
-	if added == "-" {
-		return 0, true
-	}
-	n, err := strconv.Atoi(added)
-	if err != nil {
-		return 0, false
-	}
-	return n, false
-}
+// countScript counts every untracked file it is handed, in one shell inside
+// the sandbox. Each is diffed against nothing, exactly as FileDiff diffs an
+// untracked file, so what comes back is git's own numstat — with the two names
+// of a rename, /dev/null and the file, since that is what a diff between
+// differently named paths is. A file git will not read contributes nothing and
+// does not stop the ones after it.
+const countScript = `root=$1
+shift
+for f in "$@"; do
+	git -C "$root" diff --no-index --numstat -z -- /dev/null "$f" || true
+done`
 
 // countLines counts what an untracked file adds, and says whether it is one
 // nobody wants rendered as text. Everything in such a file is an addition, so

@@ -493,6 +493,75 @@ func TestCommandRunsInsideASandbox(t *testing.T) {
 	}
 }
 
+// fakeSbx writes a stand-in for the sbx binary: one that prints the line sbx
+// prints when the exec had to start the container first, and then runs the
+// command it was handed here rather than in a container.
+func fakeSbx(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "sbx")
+	// The arguments are "exec <sandbox> <command>…", and the command is what
+	// this is standing in for the container to run.
+	script := "#!/bin/sh\necho 'Sandbox demo started successfully'\nshift 2\nexec \"$@\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// Everything a sandbox's git writes comes back with sbx's own line in front of
+// it, and nothing about a diff says where sbx stopped and git began. Glued
+// together they parse as nonsense — a toplevel that is not a path, a status
+// letter that is not one — so the command prints a marker of its own first and
+// what came before it is dropped.
+func TestChangesInsideASandboxStepsOverSbxsOwnOutput(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "keep.txt", "one\nTWO\nthree\n")
+	write(t, dir, "fresh.txt", "brand new\nlines\n")
+	write(t, dir, "blob.bin", "\x00\x01\n")
+
+	c := New("git").InSandbox(fakeSbx(t), "demo")
+	got, err := c.Changes(context.Background(), dir, BaseHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Root != dir {
+		t.Errorf("root = %q, want %q — sbx's own line is still in it", got.Root, dir)
+	}
+	if c := changed(t, got, "keep.txt"); c.Status != "modified" || c.Added != 1 {
+		t.Errorf("keep.txt = %+v, want modified +1", c)
+	}
+	// An untracked file is counted by the git inside the sandbox, in one pass
+	// for the whole list rather than one exec apiece.
+	if c := changed(t, got, "fresh.txt"); c.Status != "untracked" || c.Added != 2 {
+		t.Errorf("fresh.txt = %+v, want untracked +2", c)
+	}
+	if c := changed(t, got, "blob.bin"); !c.Binary {
+		t.Errorf("blob.bin = %+v, want binary", c)
+	}
+
+	// And the same for a file's own diff, which for an untracked file is the
+	// one command that reports what it found through its exit status.
+	diff, err := c.FileDiff(context.Background(), dir, BaseHead, "fresh.txt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Hunks) != 1 || len(diff.Hunks[0].Lines) != 2 {
+		t.Errorf("diff of fresh.txt = %+v, want one hunk of two added lines", diff.Hunks)
+	}
+}
+
+// A sandbox that will not run the command is not a workspace that is not a
+// checkout: the UI has a settled explanation for the second, and giving it for
+// the first tells the user something confident and wrong.
+func TestChangesInsideASandboxThatWillNotRun(t *testing.T) {
+	dir := repo(t)
+	c := New("git").InSandbox(filepath.Join(t.TempDir(), "no-such-sbx"), "demo")
+	_, err := c.Changes(context.Background(), dir, BaseHead)
+	if err == nil || errors.Is(err, ErrNotRepo) {
+		t.Errorf("err = %v, want a failure that is not ErrNotRepo", err)
+	}
+}
+
 // The ordinary case is unchanged: git here, in the directory itself.
 func TestCommandRunsHereByDefault(t *testing.T) {
 	cmd := New("git").command(t.Context(), "/work/app", []string{"status"})
@@ -504,19 +573,22 @@ func TestCommandRunsHereByDefault(t *testing.T) {
 	}
 }
 
-func TestParseNumstatLine(t *testing.T) {
-	for _, tt := range []struct {
-		out    string
-		added  int
-		binary bool
-	}{
-		{"12\t0\tnew.txt\n", 12, false},
-		{"-\t-\tblob.bin\n", 0, true},
-		{"", 0, false},
-	} {
-		added, binary := parseNumstatLine(tt.out)
-		if added != tt.added || binary != tt.binary {
-			t.Errorf("%q = (%d, %v), want (%d, %v)", tt.out, added, binary, tt.added, tt.binary)
-		}
+// The untracked files of a sandbox are counted by one run of countScript, and
+// what it writes is a numstat record per file — each of them the two-name form,
+// since a diff between /dev/null and a file is a diff between different names.
+func TestApplyNumstatReadsNoIndexRecords(t *testing.T) {
+	changes := []Change{
+		{Path: "fresh.txt", Status: "untracked"},
+		{Path: "blob.bin", Status: "untracked"},
+	}
+	data := []byte("2\t0\t\x00/dev/null\x00fresh.txt\x00-\t-\t\x00/dev/null\x00blob.bin\x00")
+	if err := applyNumstat(data, changes); err != nil {
+		t.Fatal(err)
+	}
+	if changes[0].Added != 2 || changes[0].Binary {
+		t.Errorf("fresh.txt = %+v, want +2 and not binary", changes[0])
+	}
+	if !changes[1].Binary || changes[1].Added != 0 {
+		t.Errorf("blob.bin = %+v, want binary with no count", changes[1])
 	}
 }
