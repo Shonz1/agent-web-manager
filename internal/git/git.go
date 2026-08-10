@@ -150,13 +150,17 @@ type Client struct {
 	// instead of on this machine; see InSandbox.
 	sbxBin  string
 	sandbox string
+
+	// probes remembers what each repository is, for the few seconds a view
+	// spends asking about the same one; see probeCache.
+	probes *probeCache
 }
 
 func New(bin string) *Client {
 	if bin == "" {
 		bin = "git"
 	}
-	return &Client{Bin: bin}
+	return &Client{Bin: bin, probes: newProbeCache()}
 }
 
 // InSandbox returns a copy of c that runs its git inside the named sandbox,
@@ -181,45 +185,17 @@ func (c *Client) remote() bool { return c.sandbox != "" }
 
 // Changes lists every file in dir's repository that differs from base.
 func (c *Client) Changes(ctx context.Context, dir string, base Base) (Changes, error) {
-	root, err := c.root(ctx, dir)
+	info, err := c.probe(ctx, dir)
 	if err != nil {
 		return Changes{}, err
 	}
+	rev, ref := baseFor(info, base)
 
-	rev, ref, err := c.resolveBase(ctx, root, base)
-	if err != nil {
-		return Changes{}, err
-	}
+	out := Changes{Root: info.Root, Branch: info.Branch, Base: base, BaseRef: ref, Files: []Change{}}
 
-	out := Changes{Root: root, Base: base, BaseRef: ref, Files: []Change{}}
-	out.Branch, _ = c.branch(ctx, root)
-
-	status, _, err := c.output(ctx, root, "diff", "--name-status", "-z", "--no-color", rev, "--")
+	files, err := c.changedFiles(ctx, info.Root, rev)
 	if err != nil {
 		return Changes{}, err
-	}
-	files, err := parseNameStatus(status)
-	if err != nil {
-		return Changes{}, err
-	}
-
-	numstat, _, err := c.output(ctx, root, "diff", "--numstat", "-z", "--no-color", rev, "--")
-	if err != nil {
-		return Changes{}, err
-	}
-	if err := applyNumstat(numstat, files); err != nil {
-		return Changes{}, err
-	}
-
-	// A file the agent has just created is untracked, and git's diff machinery
-	// says nothing about one — but a new file is the most interesting thing on
-	// the list, so it is gathered separately and counted by hand.
-	others, _, err := c.output(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return Changes{}, err
-	}
-	for _, name := range splitZ(others) {
-		files = append(files, Change{Path: name, Status: "untracked"})
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -231,9 +207,61 @@ func (c *Client) Changes(ctx context.Context, dir string, base Base) (Changes, e
 	// list has been cut down to the files that will be shown: a sandbox full
 	// of build output has tens of thousands of them, and nobody is going to
 	// see past the first two thousand.
-	c.countUntracked(ctx, root, files)
+	c.countUntracked(ctx, info.Root, files)
 	out.Files = files
 	return out, nil
+}
+
+// changedFiles gathers the three lists a change list is built from: what
+// differs from rev, how much of each differs, and what is sitting there that
+// git has never been told about.
+//
+// Inside a sandbox all three are read by one script, because the cost of
+// reading them is the container round trip and not the git: three commands
+// that each take milliseconds were paying for three of those.
+func (c *Client) changedFiles(ctx context.Context, root, rev string) ([]Change, error) {
+	var status, numstat, others []byte
+	if c.remote() {
+		// The label is the first of the commands the script runs, so that a
+		// failure still names something the reader can go and run.
+		out, cut, err := c.capture(ctx, "diff --name-status", false, func(ctx context.Context) *exec.Cmd {
+			return c.sandboxCommand(ctx, listScript, root, rev)
+		})
+		if err != nil {
+			return nil, err
+		}
+		secs, err := sections(out, cut)
+		if err != nil {
+			return nil, err
+		}
+		status, numstat, others = secs["status"], secs["numstat"], secs["others"]
+	} else {
+		var err error
+		if status, _, err = c.output(ctx, root, "diff", "--name-status", "-z", "--no-color", rev, "--"); err != nil {
+			return nil, err
+		}
+		if numstat, _, err = c.output(ctx, root, "diff", "--numstat", "-z", "--no-color", rev, "--"); err != nil {
+			return nil, err
+		}
+		if others, _, err = c.output(ctx, root, "ls-files", "--others", "--exclude-standard", "-z"); err != nil {
+			return nil, err
+		}
+	}
+
+	files, err := parseNameStatus(status)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyNumstat(numstat, files); err != nil {
+		return nil, err
+	}
+	// A file the agent has just created is untracked, and git's diff machinery
+	// says nothing about one — but a new file is the most interesting thing on
+	// the list, so it is gathered separately and counted by hand.
+	for _, name := range splitZ(others) {
+		files = append(files, Change{Path: name, Status: "untracked"})
+	}
+	return files, nil
 }
 
 // FileDiff returns one file's diff against base. oldPath is where the file was
@@ -249,31 +277,15 @@ func (c *Client) FileDiff(ctx context.Context, dir string, base Base, file, oldP
 		}
 	}
 
-	root, err := c.root(ctx, dir)
+	info, err := c.probe(ctx, dir)
 	if err != nil {
 		return FileDiff{}, err
 	}
+	rev, _ := baseFor(info, base)
 
 	out := FileDiff{Path: file, OldPath: oldPath, Hunks: []Hunk{}}
 
-	var raw []byte
-	var truncated bool
-	if c.untracked(ctx, root, file) {
-		// An untracked file has nothing in the index to compare against, so it
-		// is diffed against nothing at all. --no-index is the one form of git
-		// diff that will do that, and it needs no index to do it.
-		raw, truncated, err = c.diffOutput(ctx, root, "diff", "--no-index", "--no-color", "--", os.DevNull, file)
-	} else {
-		rev, _, rerr := c.resolveBase(ctx, root, base)
-		if rerr != nil {
-			return FileDiff{}, rerr
-		}
-		args := []string{"diff", "--no-color", rev, "--", file}
-		if oldPath != "" {
-			args = []string{"diff", "--no-color", "--find-renames", rev, "--", oldPath, file}
-		}
-		raw, truncated, err = c.output(ctx, root, args...)
-	}
+	raw, truncated, err := c.fileDiff(ctx, info.Root, rev, file, oldPath)
 	if err != nil {
 		return FileDiff{}, err
 	}
@@ -290,38 +302,150 @@ func (c *Client) FileDiff(ctx context.Context, dir string, base Base, file, oldP
 	return out, nil
 }
 
-// --- git invocations ---
+// fileDiff reads one file's diff against rev, whichever kind of file it is.
+//
+// Which kind it is has to be established first, and inside a sandbox that
+// question and the diff that follows from it go in one script: asking it
+// separately doubled the round trips for every file opened.
+func (c *Client) fileDiff(ctx context.Context, root, rev, file, oldPath string) ([]byte, bool, error) {
+	if c.remote() {
+		return c.capture(ctx, "diff "+file, false, func(ctx context.Context) *exec.Cmd {
+			return c.sandboxCommand(ctx, fileScript, root, rev, file, oldPath)
+		})
+	}
+	if c.untracked(ctx, root, file) {
+		// An untracked file has nothing in the index to compare against, so it
+		// is diffed against nothing at all. --no-index is the one form of git
+		// diff that will do that, and it needs no index to do it.
+		return c.diffOutput(ctx, root, "diff", "--no-index", "--no-color", "--", os.DevNull, file)
+	}
+	args := []string{"diff", "--no-color", rev, "--", file}
+	if oldPath != "" {
+		args = []string{"diff", "--no-color", "--find-renames", rev, "--", oldPath, file}
+	}
+	return c.output(ctx, root, args...)
+}
 
-// root returns the top of the checkout dir is in.
-func (c *Client) root(ctx context.Context, dir string) (string, error) {
+// --- what a repository is ---
+
+// repoInfo is what a repository is, apart from any particular comparison:
+// where its top is, what is on HEAD, what is checked out, and what this branch
+// appears to have grown out of.
+//
+// These are gathered together because they are asked for together, and none of
+// them depends on which base is being looked at — so one reading of them
+// serves the change list and every file opened from it.
+type repoInfo struct {
+	Root string
+	// Head is the commit HEAD names, or "" in a repository with no commits.
+	Head   string
+	Branch string
+	// Default is the branch this one appears to have grown out of, and
+	// MergeBase the commit where it left it. Both are "" when there is nothing
+	// to have branched from.
+	Default   string
+	MergeBase string
+}
+
+// probe reads what dir's repository is, or returns what it was a moment ago.
+func (c *Client) probe(ctx context.Context, dir string) (repoInfo, error) {
 	if dir == "" {
-		return "", ErrNotRepo
+		return repoInfo{}, ErrNotRepo
 	}
-	// Only when the checkout is on this machine. A sandbox's own clone sits
-	// at this path inside the container, where this stat says nothing about
-	// whether it is there.
-	if !c.remote() {
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			return "", fmt.Errorf("workspace %q is not readable from here", dir)
-		}
+	// The sandbox belongs in the key: a clone sandbox's workspace has the same
+	// path as the host folder it was cloned from, and is a different checkout.
+	key := c.sandbox + "\x00" + dir
+	if info, ok := c.probes.get(key); ok {
+		return info, nil
 	}
-	out, _, err := c.output(ctx, dir, "rev-parse", "--show-toplevel")
+	info, err := c.readRepo(ctx, dir)
+	if err != nil {
+		return repoInfo{}, err
+	}
+	c.probes.put(key, info)
+	return info, nil
+}
+
+func (c *Client) readRepo(ctx context.Context, dir string) (repoInfo, error) {
+	if c.remote() {
+		return c.probeInSandbox(ctx, dir)
+	}
+	return c.probeHere(ctx, dir)
+}
+
+// probeInSandbox reads a repository through one "sbx exec" rather than the six
+// or so commands it takes, which on this side of a container is the whole cost.
+func (c *Client) probeInSandbox(ctx context.Context, dir string) (repoInfo, error) {
+	out, _, err := c.capture(ctx, "rev-parse --show-toplevel", false, func(ctx context.Context) *exec.Cmd {
+		return c.sandboxCommand(ctx, probeScript, dir)
+	})
 	if err != nil {
 		if notRepo(err) {
-			return "", ErrNotRepo
+			return repoInfo{}, ErrNotRepo
 		}
 		// A sandbox that would not start, or a git that is not installed:
 		// answering ErrNotRepo would have the UI explain that the workspace is
 		// not a checkout, which is a confident answer to a question nothing
 		// managed to ask.
-		return "", err
+		return repoInfo{}, err
 	}
-	root := strings.TrimSpace(string(out))
-	if root == "" {
-		return "", ErrNotRepo
+	secs, err := sections(out, false)
+	if err != nil {
+		return repoInfo{}, err
 	}
-	return root, nil
+	info := repoInfo{
+		Root:      trimmed(secs["root"]),
+		Head:      trimmed(secs["head"]),
+		Branch:    trimmed(secs["branch"]),
+		Default:   trimmed(secs["default"]),
+		MergeBase: trimmed(secs["mergebase"]),
+	}
+	if info.Root == "" {
+		return repoInfo{}, ErrNotRepo
+	}
+	return info, nil
 }
+
+// probeHere reads a repository on this machine, where a git command costs
+// milliseconds and there is nothing to be gained by bundling them.
+func (c *Client) probeHere(ctx context.Context, dir string) (repoInfo, error) {
+	// Only when the checkout is on this machine. A sandbox's own clone sits
+	// at this path inside the container, where this stat says nothing about
+	// whether it is there.
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return repoInfo{}, fmt.Errorf("workspace %q is not readable from here", dir)
+	}
+	out, _, err := c.output(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		if notRepo(err) {
+			return repoInfo{}, ErrNotRepo
+		}
+		return repoInfo{}, err
+	}
+	info := repoInfo{Root: strings.TrimSpace(string(out))}
+	if info.Root == "" {
+		return repoInfo{}, ErrNotRepo
+	}
+
+	// Past the root, everything is allowed to come back empty: a repository
+	// with no commits has no HEAD and no branch, and one that was never cloned
+	// has nothing it grew out of. None of those is a failure to read it.
+	if out, _, err := c.output(ctx, info.Root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err == nil {
+		info.Head = strings.TrimSpace(string(out))
+	}
+	if out, _, err := c.output(ctx, info.Root, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		info.Branch = strings.TrimSpace(string(out))
+	}
+	info.Default = c.defaultBranch(ctx, info.Root)
+	if info.Default != "" && info.Head != "" {
+		if out, _, err := c.output(ctx, info.Root, "merge-base", info.Default, "HEAD"); err == nil {
+			info.MergeBase = strings.TrimSpace(string(out))
+		}
+	}
+	return info, nil
+}
+
+func trimmed(b []byte) string { return strings.TrimSpace(string(b)) }
 
 // notRepo reports whether a git command failed because there is no repository
 // where it was pointed, rather than failing to run at all. git says which in
@@ -332,91 +456,68 @@ func notRepo(err error) bool {
 		strings.Contains(msg, "not a working tree")
 }
 
-func (c *Client) branch(ctx context.Context, root string) (string, error) {
-	out, _, err := c.output(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
 // Branch returns the branch currently checked out in dir, or "" if dir is
 // not a git checkout, has no commits yet, or is in a detached HEAD state —
 // callers that only want something to show beside a name treat all of those
 // alike rather than as errors.
 func (c *Client) Branch(ctx context.Context, dir string) string {
-	root, err := c.root(ctx, dir)
+	info, err := c.probe(ctx, dir)
 	if err != nil {
 		return ""
 	}
-	b, err := c.branch(ctx, root)
-	if err != nil {
-		return ""
-	}
-	return b
+	return info.Branch
 }
 
 // IsRepo reports whether dir is inside a git checkout. It is what decides
 // whether a sandbox can be given a clone of it: there is nothing to clone
 // from a plain directory, and sbx would refuse.
 func (c *Client) IsRepo(ctx context.Context, dir string) bool {
-	_, err := c.root(ctx, dir)
+	_, err := c.probe(ctx, dir)
 	return err == nil
 }
 
-// resolveBase turns a base into the revision to diff against and the name to
-// show for it.
-func (c *Client) resolveBase(ctx context.Context, root string, base Base) (rev, ref string, err error) {
-	head := emptyTree
-	headRef := "the empty tree"
-	if _, _, err := c.output(ctx, root, "rev-parse", "--verify", "HEAD^{commit}"); err == nil {
+// baseFor turns a base into the revision to diff against and the name to show
+// for it. Everything it needs was read once, by probe.
+func baseFor(info repoInfo, base Base) (rev, ref string) {
+	// A repository with no commits has no HEAD to compare against, and the
+	// empty tree stands in for one: every file in it then reads as added.
+	head, headRef := emptyTree, "the empty tree"
+	if info.Head != "" {
 		head, headRef = "HEAD", "HEAD"
 	}
-	if base != BaseBranch || head == emptyTree {
-		return head, headRef, nil
+	if base != BaseBranch || info.Head == "" {
+		return head, headRef
 	}
-
-	def, ok := c.defaultBranch(ctx, root)
-	if !ok {
+	if info.Default == "" || info.MergeBase == "" {
 		// Nothing to have branched from — a repository with one branch, or one
 		// whose default is named something this cannot guess. Uncommitted work
 		// is still worth showing, and the name says which it is.
-		return head, headRef, nil
-	}
-	out, _, err := c.output(ctx, root, "merge-base", def, "HEAD")
-	if err != nil {
-		return head, headRef, nil
-	}
-	mergeBase := strings.TrimSpace(string(out))
-	if mergeBase == "" {
-		return head, headRef, nil
+		return head, headRef
 	}
 	// This branch is the default one, or has not left it yet: there is no
 	// stretch of commits to show, and saying "main since main" would only be a
 	// confusing way of saying that. What is uncommitted is still worth seeing.
-	if headOID, _, err := c.output(ctx, root, "rev-parse", "HEAD"); err == nil {
-		if strings.TrimSpace(string(headOID)) == mergeBase {
-			return head, headRef, nil
-		}
+	if info.MergeBase == info.Head {
+		return head, headRef
 	}
-	return mergeBase, def, nil
+	return info.MergeBase, info.Default
 }
 
-// defaultBranch works out which branch this one grew out of. What the remote
-// says is authoritative; the usual names are only guessed at when it says
-// nothing.
-func (c *Client) defaultBranch(ctx context.Context, root string) (string, bool) {
+// defaultBranch works out which branch this one grew out of, on this machine.
+// What the remote says is authoritative; the usual names are only guessed at
+// when it says nothing. Inside a sandbox the same walk happens in probeScript.
+func (c *Client) defaultBranch(ctx context.Context, root string) string {
 	if out, _, err := c.output(ctx, root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if name := strings.TrimSpace(string(out)); name != "" {
-			return name, true
+			return name
 		}
 	}
 	for _, name := range []string{"origin/main", "origin/master", "main", "master"} {
-		if _, _, err := c.output(ctx, root, "rev-parse", "--verify", name+"^{commit}"); err == nil {
-			return name, true
+		if _, _, err := c.output(ctx, root, "rev-parse", "--verify", "--quiet", name+"^{commit}"); err == nil {
+			return name
 		}
 	}
-	return "", false
+	return ""
 }
 
 // untracked reports whether git is ignoring this file because it has never
