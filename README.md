@@ -407,6 +407,25 @@ Sends that fail are logged and dropped rather than retried. These describe a
 state that is still moving: an event held in a queue for a minute is about a
 session that has moved on, and there will be another along shortly.
 
+### Writing more than one line
+
+Enter at a prompt sends what has been typed, which leaves nowhere to put a
+second line — the first one has already gone. Under the terminal is a box that
+holds the whole message instead. Enter in it starts a new line; **Send**, or
+Ctrl-Enter, delivers all of it and presses Return after it.
+
+It arrives as a paste rather than as typing, and that is the difference that
+matters: a program that has asked for bracketed pastes reads the newlines in
+one as text, so a paragraph lands in the prompt as a paragraph. A program that
+has not asked — a plain shell, usually — is sent the bare text, where each line
+runs as its own command, which is what pasting into a terminal has always done.
+
+The box is one line tall until there is more to show, grows with what is
+written in it, and stops at a third of the panel; past that it scrolls, and the
+terminal keeps the rest of the screen. A half-written message survives a look
+at another session, or at the changes, and is still there on the way back. It
+is dropped when the session it was meant for is gone.
+
 ### What it has actually done
 
 A session has a second view behind the **Changes** tab: the git diff of the
@@ -485,7 +504,10 @@ top bar, so the terminal keeps the whole screen; picking a sandbox or session
 closes it, as does tapping outside. Sessions add a row of keys under the
 terminal — `esc`, `tab`, `^C`, and the arrows — because a soft keyboard has
 none of them and every agent TUI wants all of them. Dragging on the terminal
-scrolls it even while the program inside has mouse reporting on.
+scrolls it even while the program inside has mouse reporting on. Anything
+longer than a word is better written in the box under the terminal — see
+[Writing more than one line](#writing-more-than-one-line) — where a soft
+keyboard's autocorrect and its return key both behave.
 
 Reaching the manager from a phone means binding it somewhere the phone can
 see, which puts it on the network — read [Security](#security) first. It also

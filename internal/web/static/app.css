@@ -519,6 +519,42 @@ button.link-badge:hover:not(:disabled) { background: #1c2330; color: var(--text)
   touch-action: pan-x pinch-zoom;
 }
 
+/* Where a message longer than one line is written. Unlike the key bar this is
+   on every screen: a desktop keyboard is no better at typing a paragraph into
+   a prompt that submits on Enter. */
+.composer {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  /* One line at rest; grown to what has been written (growComposer), and past
+     the cap it scrolls rather than pushing the terminal off the screen. */
+  min-height: 36px;
+  max-height: 35vh;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: none;
+  overflow-y: auto;
+}
+.composer textarea:focus { outline: none; border-color: var(--accent); }
+
+.composer button {
+  flex: none;
+  min-height: 36px;
+}
+
 /* --- diff browser --- */
 
 /* The terminal and the diff are two views of one session, so they share the
@@ -1118,6 +1154,11 @@ code {
 
   .terminal { padding: 6px 2px 6px 6px; }
 
+  /* Thumb-sized, and shorter at rest: the terminal has less screen to give up
+     here than anywhere else. */
+  .composer textarea { min-height: 42px; max-height: 28dvh; }
+  .composer button { min-height: 42px; padding: 6px 14px; }
+
   /* Side by side there is room for neither, so the file list becomes a short
      strip above the diff — enough to pick from without burying what is being
      read. */
@@ -1149,7 +1190,7 @@ code {
   /* iOS zooms the page in on any field under 16px; every other size here is
      free to stay small. */
   dialog input, dialog select, dialog textarea,
-  .settings-group input { font-size: 16px; }
+  .settings-group input, .composer textarea { font-size: 16px; }
   /* Its own rule outranks the one above, so it needs saying again here. */
   .browse-bar input { font-size: 16px; }
   /* Tapping the terminal focuses xterm's hidden textarea, which inherits the

@@ -191,6 +191,7 @@ async function refresh() {
   // A selection can vanish under us: another tab deleted the project or
   // sandbox, or the session was ended.
   if (state.sel && !selectionExists(state.sel)) clearSelection();
+  pruneDrafts();
   renderList();
   renderMain();
 }
@@ -625,6 +626,13 @@ function renderSessionPanel(s, b) {
 
   $('btn-interrupt').disabled = !isLive(s);
   $('btn-restart').disabled = isLive(s);
+
+  // Nothing is left to read the message once the process is gone; the draft
+  // stays put, in case the session is restarted.
+  $('composer-send').disabled = !isLive(s);
+  $('composer-text').placeholder = s.kind === 'shell'
+    ? 'Type a command — Enter starts a new line'
+    : 'Write a message — Enter starts a new line';
 }
 
 function isLive(s) {
@@ -811,6 +819,9 @@ function selectSession(id) {
 
   renderList();
   renderMain();
+  // After the panel is on screen: a hidden box measures zero, and a restored
+  // draft of several lines would be left folded into one.
+  loadDraft(id);
   connect(id);
   // Focusing raises the soft keyboard, which would cover half the terminal
   // before there is anything to read. On a phone that is the user's call.
@@ -1181,6 +1192,7 @@ function setSessionView(view) {
   $('diff-pane').hidden = !showDiff;
   $('terminal').hidden = showDiff;
   $('term-keys').hidden = showDiff;
+  $('composer').hidden = showDiff;
 
   for (const [id, on] of [['tab-terminal', !showDiff], ['tab-diff', showDiff]]) {
     $(id).classList.toggle('active', on);
@@ -2457,6 +2469,101 @@ for (const btn of $('term-keys').querySelectorAll('button')) {
     if (seq) sendSocket({ type: 'input', data: seq });
   });
 }
+
+/* ---------- composer ---------- */
+
+/* Enter at a prompt submits, so a message of several lines cannot be typed
+   into the terminal: the first line is gone before the second is written. The
+   composer keeps the whole message on this side and hands it over at once. */
+
+// Delivered as a paste, which is also what tells a TUI that the newlines in it
+// are text rather than someone pressing Return. Only programs that asked for
+// bracketed pastes (DECSET 2004) understand the markers, so the rest are sent
+// the bare text — indistinguishable, to them, from it having been typed.
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+
+// A beat between the message and the Return that submits it: a TUI that has
+// just taken a paste is still redrawing, and one that decides a paste has
+// ended by how long the input stayed quiet would swallow an immediate Return
+// into the pasted text.
+const SUBMIT_DELAY = 80;
+
+// Half-written messages survive a look at another session and back. Losing a
+// paragraph to a mistaken tap is worse than keeping a few strings around.
+const drafts = new Map();
+
+// Only the sessions still on the books can be come back to, so only their
+// drafts are worth holding. Called from the poll that refreshes the lists.
+function pruneDrafts() {
+  for (const id of drafts.keys()) {
+    if (!findSession(id)) drafts.delete(id);
+  }
+}
+
+function loadDraft(id) {
+  $('composer-text').value = drafts.get(id) || '';
+  growComposer();
+}
+
+// The box is one line until there is more to show. The stylesheet caps how far
+// it grows; past that the height sticks and it scrolls instead.
+function growComposer() {
+  const box = $('composer-text');
+  box.style.height = 'auto';
+  // scrollHeight is content and padding, and the box is border-box.
+  const border = box.offsetHeight - box.clientHeight;
+  box.style.height = `${box.scrollHeight + border}px`;
+}
+
+function sendComposed() {
+  const box = $('composer-text');
+  const s = selectedSession();
+  if (!box.value.trim() || !s || !isLive(s)) return;
+
+  const sock = state.socket;
+  if (!sock) return;
+
+  // Return, not newline: that is the byte a terminal sends for the key, and
+  // the only one a program reading raw is watching for.
+  const body = box.value.replace(/\r?\n/g, '\r');
+  const bracketed = !!(state.term && state.term.modes.bracketedPasteMode);
+  sendSocket({ type: 'input', data: bracketed ? PASTE_START + body + PASTE_END : body });
+  setTimeout(() => {
+    // The session can be swapped out from under the timer, and the Return
+    // belongs to the message, not to whatever is attached now.
+    if (state.socket === sock) sendSocket({ type: 'input', data: '\r' });
+  }, SUBMIT_DELAY);
+
+  box.value = '';
+  drafts.delete(s.id);
+  growComposer();
+  // Keeps a phone's keyboard up for the next message.
+  box.focus();
+}
+
+$('composer-text').addEventListener('input', () => {
+  growComposer();
+  const s = selectedSession();
+  if (!s) return;
+  const text = $('composer-text').value;
+  if (text) drafts.set(s.id, text);
+  else drafts.delete(s.id);
+});
+
+$('composer-text').addEventListener('keydown', (ev) => {
+  // Enter is a new line here — that is the whole point of the box — so the
+  // send has to live on a chord, the one every chat client already uses.
+  if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+    ev.preventDefault();
+    sendComposed();
+  }
+});
+
+// Taking focus would drop a phone's keyboard between writing the message and
+// sending it; the box keeps it, and the click still arrives.
+$('composer-send').addEventListener('pointerdown', (ev) => ev.preventDefault());
+$('composer-send').addEventListener('click', sendComposed);
 
 /* ---------- bootstrap ---------- */
 
