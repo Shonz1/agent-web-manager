@@ -149,6 +149,14 @@ function projectSessionTitle(s) {
 // branch is the project session's own subtitle in place of the context line:
 // which branch it is on says more here than what it is doing, since the tree
 // already names it after that.
+// A session's second line: the branch its sandbox is on, or — for one
+// working in a clone made inside its sandbox, whose branch can only be read
+// in there — what kind of workspace it has instead.
+function sessionSubtitle(stub) {
+  if (stub.branch) return stub.branch;
+  return stub.clone ? 'clone' : '';
+}
+
 function projectSessionTextEl(s, branch) {
   const wrap = document.createElement('span');
   wrap.className = 'session-text';
@@ -199,7 +207,7 @@ function projectListSignature() {
   const parts = state.projects.map((p) => {
     const rows = (p.sessions || []).map((stub) => {
       const s = findSession(stub.id) || stub;
-      return `${s.id}:${projectSessionTitle(s)}:${stub.branch || ''}:${s.status}:${s.activity || ''}`;
+      return `${s.id}:${projectSessionTitle(s)}:${sessionSubtitle(stub)}:${s.status}:${s.activity || ''}`;
     });
     return [p.id, p.name, p.path, rows.join(',')].join(' ');
   });
@@ -264,7 +272,7 @@ function renderProjectList(force) {
         sdot.className = dotClass(s);
         sdot.title = dotTitle(s);
 
-        srow.append(sdot, projectSessionTextEl(s, stub.branch));
+        srow.append(sdot, projectSessionTextEl(s, sessionSubtitle(stub)));
         srow.addEventListener('click', () => selectSession(s.id));
         rows.append(srow);
       }
@@ -307,8 +315,11 @@ function renderMain() {
 
 function renderProjectPanel(p) {
   $('proj-name').textContent = p.name;
-  $('proj-meta').textContent = p.path;
-  $('proj-meta').title = p.path;
+  // The agent belongs to the project now, so it is said here rather than on
+  // each of its sandboxes, which are all built for it.
+  const meta = [p.path, p.agent].filter(Boolean).join('  ·  ');
+  $('proj-meta').textContent = meta;
+  $('proj-meta').title = meta;
 
   renderProjectSandboxes(p);
 
@@ -341,7 +352,7 @@ function renderProjectPanel(p) {
       ? `exited (${s.exitCode})`
       : s.status;
 
-    card.append(dot, projectSessionTextEl(s, stub.branch), activityBadge(s), badge);
+    card.append(dot, projectSessionTextEl(s, sessionSubtitle(stub)), activityBadge(s), badge);
     card.addEventListener('click', () => selectSession(s.id));
     li.append(card);
     list.append(li);
@@ -363,7 +374,7 @@ function renderProjectSandboxes(p) {
   if (boxes.length === 0) {
     const li = document.createElement('li');
     li.className = 'empty-hint';
-    li.textContent = 'No sandboxes yet. Starting a session makes one.';
+    li.textContent = "Building this project's base sandbox. Sessions can start once it is there.";
     list.append(li);
     return;
   }
@@ -402,25 +413,44 @@ function renderProjectSandboxes(p) {
     status.className = `badge sandbox-${b.status}`;
     status.textContent = b.status;
 
-    card.append(dot, text, sessionCountBadge(b.sessions), agent, status);
+    card.append(dot, text, baseBadge(b), sessionCountBadge(b.sessions), agent, status);
     card.addEventListener('click', () => selectSandbox(b.id));
 
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'danger row-action';
-    del.textContent = 'Delete';
-    del.title = 'Destroy this sandbox permanently';
-    del.addEventListener('click', () => deleteSandbox(b));
+    li.append(card);
 
-    li.append(card, del);
+    // The base sandbox has no Delete: it is what every session sandbox is
+    // cloned from, and it goes when the project goes.
+    if (!b.isBase) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'danger row-action';
+      del.textContent = 'Delete';
+      del.title = 'Destroy this sandbox permanently';
+      del.addEventListener('click', () => deleteSandbox(b));
+      li.append(del);
+    }
     list.append(li);
   }
 }
 
-// A sandbox's second line: what makes it different from the project's other
-// ones — the branch it is on — and where it is mounted.
+// Marks the one sandbox in a project that is not for working in, so the row
+// that offers no actions says why before anyone goes looking for them.
+function baseBadge(b) {
+  if (!b.isBase) return document.createDocumentFragment();
+  const el = document.createElement('span');
+  el.className = 'badge base';
+  el.textContent = 'base';
+  el.title = 'Cloned from by every session. Nothing runs in it.';
+  return el;
+}
+
+// A sandbox's second line: what kind of workspace it has — the project's own
+// folder, a clone of it inside the sandbox, or a worktree on this machine —
+// and where that came from.
 function sandboxSubtitle(b) {
   const bits = [];
+  if (b.isBase) bits.push('base');
+  if (b.clone) bits.push('clone');
   if (b.isWorktree) bits.push('worktree');
   if (b.branch) bits.push(b.branch);
   bits.push(shortPath(b.workspace) || 'no workspace mount');
@@ -437,6 +467,20 @@ function sessionCountBadge(n) {
   return el;
 }
 
+// What the panel says instead of offering a base sandbox's actions, and what
+// its greyed-out buttons explain when hovered.
+const BASE_SANDBOX_NOTE =
+  "This is the project's base sandbox. Every session runs in a clone of it, and nothing runs in here —"
+  + ' so it keeps whatever plugins and model the project was set up with. It is removed with the project.';
+
+// The titles the buttons carry when the sandbox is an ordinary one, kept here
+// because the base sandbox replaces them and something has to put them back.
+const BUTTON_TITLES = {
+  'btn-start-agent': "Attach the sandbox's agent to a new terminal",
+  'btn-stop-sandbox': 'End every session and stop the sandbox',
+  'btn-delete-sandbox': 'Destroy the sandbox permanently',
+};
+
 function renderSandboxPanel(b) {
   $('sb-name').textContent = b.name;
 
@@ -448,6 +492,8 @@ function renderSandboxPanel(b) {
   agent.textContent = b.agent || 'unknown agent';
 
   const bits = [b.workspace];
+  if (b.isBase) bits.push('base sandbox');
+  if (b.clone) bits.push('clone of the project folder, made inside the sandbox');
   if (b.adopted) bits.push('added from sbx');
   if (b.extraWorkspaces && b.extraWorkspaces.length) bits.push(b.extraWorkspaces.join(' '));
   if (b.publish && b.publish.length) bits.push(`ports ${b.publish.join(', ')}`);
@@ -458,8 +504,16 @@ function renderSandboxPanel(b) {
   const sessions = b.sessions || [];
   const gone = b.status === 'missing' && b.adopted;
 
-  $('btn-start-agent').disabled = gone;
-  $('btn-stop-sandbox').disabled = b.status === 'missing';
+  // Nothing can be done to a base sandbox: it is only ever cloned from, and
+  // the server refuses all three of these. The buttons say so before they are
+  // pressed rather than after.
+  const base = !!b.isBase;
+  $('btn-start-agent').disabled = gone || base;
+  $('btn-stop-sandbox').disabled = b.status === 'missing' || base;
+  $('btn-delete-sandbox').disabled = base;
+  for (const id of ['btn-start-agent', 'btn-stop-sandbox', 'btn-delete-sandbox']) {
+    $(id).title = base ? BASE_SANDBOX_NOTE : BUTTON_TITLES[id];
+  }
 
   const list = $('sb-sessions');
   list.textContent = '';
@@ -467,9 +521,11 @@ function renderSandboxPanel(b) {
   if (sessions.length === 0) {
     const li = document.createElement('li');
     li.className = 'empty-hint';
-    li.textContent = gone
-      ? 'This sandbox is gone from sbx and was not created here, so it cannot be recreated.'
-      : 'No sessions running. Start an agent or a shell to get a terminal.';
+    li.textContent = base
+      ? BASE_SANDBOX_NOTE
+      : gone
+        ? 'This sandbox is gone from sbx and was not created here, so it cannot be recreated.'
+        : 'No sessions running. Start an agent or a shell to get a terminal.';
     list.append(li);
     return;
   }
@@ -958,11 +1014,17 @@ async function deleteSandbox(b) {
 
 // What the delete actually takes with it. A worktree sandbox owns its
 // checkout — the directory was made along with the sandbox — and the server
-// removes both, which is worth saying before it happens.
+// removes both; a clone sandbox's checkout is inside it and on this machine
+// nowhere at all. Either way, work that was never pushed goes, which is worth
+// saying before it happens.
 function sandboxDeletePrompt(b) {
   if (b.isWorktree) {
     return `Delete ${b.name} permanently, along with its worktree checkout at ${b.workspace}?`
       + ' Anything committed there and never pushed goes with it. This cannot be undone.';
+  }
+  if (b.clone) {
+    return `Delete ${b.name} permanently? Its checkout is a clone made inside the sandbox, so`
+      + ' everything in it — including commits never pushed anywhere — goes with it. This cannot be undone.';
   }
   return `Delete ${b.name} permanently, along with everything inside it? This cannot be undone.`;
 }
@@ -1422,6 +1484,7 @@ async function submitCreateProject() {
     const created = await api('POST', '/api/projects', {
       name: $('p-name').value.trim(),
       path: $('p-path').value.trim(),
+      agent: $('p-agent').value,
     });
     createProjectDialog.close();
     await refresh();
@@ -1437,10 +1500,10 @@ async function submitCreateProject() {
 
 /* ---------- new-session dialog (project flow) ---------- */
 
-/* The agent picker only matters when a sandbox is about to be made: a
-   project's first non-worktree session, which fixes its main sandbox's
-   agent for every non-worktree session after, or a worktree session, which
-   always gets a sandbox — and so an agent — of its own. */
+/* Every session gets a sandbox of its own, cloned from the project's base
+   one, so there is no agent to pick here: the project's is what the base
+   sandbox was built for. The one choice left is where the session's checkout
+   lives — a clone inside the sandbox, or a worktree on this machine. */
 
 const sessionDialog = $('session-dialog');
 
@@ -1468,39 +1531,41 @@ function resetSessionForm(p) {
   $('ns-branch').value = '';
   $('ns-worktree-path').value = '';
   applyNsWorktree();
-  applyNsAgentField(p);
-  $('session-note').textContent = p.mainSandbox
-    ? `Runs in ${p.mainSandbox.name} (${p.mainSandbox.agent}) on ${p.path}, unless given a worktree of its own.`
-    : `Starts this project's first sandbox on ${p.path}.`;
+  $('ns-agent-fixed').textContent =
+    `Agent: ${p.agent} — chosen when the project was created, and what its base sandbox is built for.`;
+  $('session-note').textContent = sessionNote(p);
+  // A folder that is not a checkout has no branches to make, so the offer is
+  // not made; the note above has already said what the session gets instead.
+  $('ns-worktree-line').hidden = !p.repo;
   $('ns-worktree-note').textContent =
-    `Starts the session in a new sandbox on the worktree, with ${p.path} mounted beside it so git keeps working inside.`;
+    `Checks the branch out beside ${p.path} on this machine and starts the session in a sandbox mounted on it,`
+    + ' with the repository beside it so git keeps working inside.';
 }
 
-function nsNeedsAgentPicker(p) {
-  return !p.mainSandbox || $('ns-worktree').checked;
-}
-
-function applyNsAgentField(p) {
-  const needsPicker = nsNeedsAgentPicker(p);
-  $('ns-agent-line').hidden = !needsPicker;
-  $('ns-agent').required = needsPicker;
-  $('ns-agent-fixed').hidden = needsPicker;
-  if (!needsPicker && p.mainSandbox) {
-    $('ns-agent-fixed').textContent = `Agent: ${p.mainSandbox.agent} — fixed by this project's sandbox.`;
+// What the session is about to get. A project folder that is not a git
+// checkout has nothing to clone, so those sessions are mounted on the folder
+// itself — and then they really are working on the same files.
+function sessionNote(p) {
+  if (!p.repo) {
+    return `${p.path} is not a git checkout, so there is nothing to clone: the session runs in a new sandbox`
+      + ' mounted on the folder itself, alongside any other session in this project.';
   }
+  if (!p.baseSandbox) {
+    return `Waits for this project's base sandbox to finish building, then runs in a clone of ${p.path}.`;
+  }
+  return `Runs in a new sandbox holding a clone of ${p.path}, made from ${p.baseSandbox.name}.`
+    + ' Nothing it does reaches this machine until you fetch it.';
 }
 
 $('ns-worktree').addEventListener('change', () => {
   applyNsWorktree();
-  const p = selectedProject();
-  if (p) applyNsAgentField(p);
   if ($('ns-worktree').checked) $('ns-branch').focus();
 });
 
 $('ns-branch').addEventListener('input', showNsDefaultWorktreePath);
 
 function nsWantsWorktree() {
-  return $('ns-worktree').checked;
+  return $('ns-worktree').checked && !$('ns-worktree-line').hidden;
 }
 
 function applyNsWorktree() {
@@ -1522,7 +1587,6 @@ async function submitSession() {
   if (!p) return;
 
   const worktree = nsWantsWorktree();
-  const needsAgent = nsNeedsAgentPicker(p);
   const raw = $('ns-args').value.trim();
   const term = ensureTerm();
   const btn = $('session-submit');
@@ -1532,7 +1596,6 @@ async function submitSession() {
     // that is already running, from the session's own Shell button.
     const body = { kind: 'agent', cols: term.cols, rows: term.rows };
     body.agentArgs = raw ? raw.split(/\s+/) : [];
-    if (needsAgent) body.agent = $('ns-agent').value;
     if (worktree) {
       body.worktree = true;
       body.branch = $('ns-branch').value.trim();
@@ -1597,9 +1660,12 @@ function resetWorktree(b) {
   $('s-worktree-path').value = '';
   // A sandbox mounted without a workspace has no repository to branch from,
   // and nothing to say about why the offer is missing that its own metadata
-  // does not say already.
-  $('s-worktree-line').hidden = !b.workspace;
-  $('s-worktree-note').textContent = b.workspace
+  // does not say already. Nor has a clone sandbox: its checkout was made
+  // inside the container, where this machine's git cannot reach it — a
+  // worktree of the project itself is started from the project instead.
+  const canBranch = !!b.workspace && !b.clone;
+  $('s-worktree-line').hidden = !canBranch;
+  $('s-worktree-note').textContent = canBranch
     ? `Starts the session in a new sandbox on the worktree, with ${b.workspace} mounted beside it so git keeps working inside.`
     : '';
   applyWorktree();
@@ -2228,10 +2294,12 @@ $('composer-send').addEventListener('click', sendComposed);
 
 /* ---------- bootstrap ---------- */
 
+// The agent is picked once, when the project is made: every sandbox in it —
+// the base one and the clone each session runs in — is built for that agent.
 async function loadAgents() {
   try {
     const { agents } = await api('GET', '/api/agents');
-    const sel = $('ns-agent');
+    const sel = $('p-agent');
     for (const a of agents) {
       const opt = document.createElement('option');
       opt.value = a;

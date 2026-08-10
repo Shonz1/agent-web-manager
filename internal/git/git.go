@@ -137,6 +137,11 @@ type FileDiff struct {
 // Client runs git commands. The zero value uses "git" from PATH.
 type Client struct {
 	Bin string
+
+	// sbxBin and sandbox, when set, run every command inside a sandbox
+	// instead of on this machine; see InSandbox.
+	sbxBin  string
+	sandbox string
 }
 
 func New(bin string) *Client {
@@ -145,6 +150,26 @@ func New(bin string) *Client {
 	}
 	return &Client{Bin: bin}
 }
+
+// InSandbox returns a copy of c that runs its git inside the named sandbox,
+// through "sbx exec", rather than on the machine this manager runs on.
+//
+// It is how a clone-mode sandbox is read. That sandbox's workspace is a git
+// clone made inside the container, at the same path the host folder would
+// have been mounted at — the host has no copy of it, and reading the host
+// folder instead would show the user their own uncommitted work in place of
+// what the agent has done.
+func (c *Client) InSandbox(sbxBin, sandbox string) *Client {
+	in := *c
+	if sbxBin == "" {
+		sbxBin = "sbx"
+	}
+	in.sbxBin, in.sandbox = sbxBin, sandbox
+	return &in
+}
+
+// remote reports whether this client's git runs somewhere other than here.
+func (c *Client) remote() bool { return c.sandbox != "" }
 
 // Changes lists every file in dir's repository that differs from base.
 func (c *Client) Changes(ctx context.Context, dir string, base Base) (Changes, error) {
@@ -186,7 +211,7 @@ func (c *Client) Changes(ctx context.Context, dir string, base Base) (Changes, e
 		return Changes{}, err
 	}
 	for _, name := range splitZ(others) {
-		added, binary := countLines(filepath.Join(root, name))
+		added, binary := c.countAdded(ctx, root, name)
 		files = append(files, Change{Path: name, Status: "untracked", Added: added, Binary: binary})
 	}
 
@@ -260,8 +285,13 @@ func (c *Client) root(ctx context.Context, dir string) (string, error) {
 	if dir == "" {
 		return "", ErrNotRepo
 	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("workspace %q is not readable from here", dir)
+	// Only when the checkout is on this machine. A sandbox's own clone sits
+	// at this path inside the container, where this stat says nothing about
+	// whether it is there.
+	if !c.remote() {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return "", fmt.Errorf("workspace %q is not readable from here", dir)
+		}
 	}
 	out, _, err := c.output(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -296,6 +326,14 @@ func (c *Client) Branch(ctx context.Context, dir string) string {
 		return ""
 	}
 	return b
+}
+
+// IsRepo reports whether dir is inside a git checkout. It is what decides
+// whether a sandbox can be given a clone of it: there is nothing to clone
+// from a plain directory, and sbx would refuse.
+func (c *Client) IsRepo(ctx context.Context, dir string) bool {
+	_, err := c.root(ctx, dir)
+	return err == nil
 }
 
 // resolveBase turns a base into the revision to diff against and the name to
@@ -378,9 +416,7 @@ func (c *Client) run(ctx context.Context, dir string, differencesOK bool, args .
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.bin(), args...)
-	cmd.Dir = dir
-	cmd.Env = gitEnv()
+	cmd := c.command(ctx, dir, args)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -423,6 +459,26 @@ func (c *Client) run(ctx context.Context, dir string, differencesOK bool, args .
 	return data, false, nil
 }
 
+// command builds one git invocation, here or inside a sandbox.
+//
+// The sandbox form names the directory with "-C" rather than by running from
+// it, and carries the environment as an "env" prefix: neither the working
+// directory nor the environment of the process spawned here reaches the
+// other side of "sbx exec".
+func (c *Client) command(ctx context.Context, dir string, args []string) *exec.Cmd {
+	if !c.remote() {
+		cmd := exec.CommandContext(ctx, c.bin(), args...)
+		cmd.Dir = dir
+		cmd.Env = gitEnv()
+		return cmd
+	}
+	argv := append([]string{"exec", c.sandbox, "env"}, gitVars()...)
+	// "git", not c.bin(): the -git flag names a binary on this machine, and
+	// the sandbox has its own.
+	argv = append(argv, "git", "-C", dir)
+	return exec.CommandContext(ctx, c.sbxBin, append(argv, args...)...)
+}
+
 func (c *Client) bin() string {
 	if c.Bin == "" {
 		return "git"
@@ -432,7 +488,13 @@ func (c *Client) bin() string {
 
 // gitEnv keeps a read out of the way of whatever else is using the repository.
 func gitEnv() []string {
-	return append(os.Environ(),
+	return append(os.Environ(), gitVars()...)
+}
+
+// gitVars is the part of that environment this program sets itself, which is
+// the only part worth carrying into a sandbox.
+func gitVars() []string {
+	return []string{
 		// Without this, a plain "git diff" refreshes and rewrites the index,
 		// which means taking its lock — behind an agent's back, in a repository
 		// it may be committing to at that moment.
@@ -442,7 +504,7 @@ func gitEnv() []string {
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_PAGER=cat",
 		"LC_ALL=C",
-	)
+	}
 }
 
 // --- parsing ---
@@ -650,6 +712,43 @@ func rangeStart(field string, sign byte) int {
 		return -1
 	}
 	return n
+}
+
+// countAdded counts what an untracked file adds, and says whether it is one
+// nobody wants rendered as text.
+//
+// A file on this machine is read directly. One inside a sandbox is counted by
+// the git that can see it, with the same "diff against nothing" FileDiff uses
+// for an untracked file — a count that cannot be had is reported as no lines
+// rather than as a failure, since it is a number beside a filename and the
+// filename is the part that matters.
+func (c *Client) countAdded(ctx context.Context, root, name string) (int, bool) {
+	if !c.remote() {
+		return countLines(filepath.Join(root, name))
+	}
+	out, _, err := c.diffOutput(ctx, root, "diff", "--no-index", "--numstat", "--no-color", "--", os.DevNull, name)
+	if err != nil {
+		return 0, false
+	}
+	return parseNumstatLine(string(out))
+}
+
+// parseNumstatLine reads the "12\t0\tpath" of a single-file numstat. A binary
+// file is "-\t-\tpath", which is git saying there are no lines to count.
+func parseNumstatLine(out string) (int, bool) {
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	added, _, ok := strings.Cut(line, "\t")
+	if !ok {
+		return 0, false
+	}
+	if added == "-" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(added)
+	if err != nil {
+		return 0, false
+	}
+	return n, false
 }
 
 // countLines counts what an untracked file adds, and says whether it is one

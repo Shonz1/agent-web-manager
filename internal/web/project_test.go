@@ -41,7 +41,7 @@ func TestProjectCRUDRoundTrip(t *testing.T) {
 	srv := projectServer(t)
 	dir := t.TempDir()
 
-	raw, _ := json.Marshal(map[string]any{"name": "Demo", "path": dir})
+	raw, _ := json.Marshal(map[string]any{"name": "Demo", "path": dir, "agent": "claude"})
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(string(raw)))
 	rec := httptest.NewRecorder()
 	srv.handleCreateProject(rec, req)
@@ -49,14 +49,17 @@ func TestProjectCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("create status = %d, want 201 (%s)", rec.Code, rec.Body)
 	}
 	created := decodeJSON[projectView](t, rec)
-	if created.Name != "Demo" || created.Path != dir {
+	if created.Name != "Demo" || created.Path != dir || created.Agent != "claude" {
 		t.Fatalf("got %+v", created)
 	}
 	if created.Sessions == nil {
 		t.Error("sessions should be an empty slice, not null — the UI iterates it without a guard")
 	}
-	if created.MainSandbox != nil {
-		t.Error("a freshly created project should have no main sandbox yet")
+	// The base sandbox is built in the background, and there is no sbx here
+	// to build it with: what matters is that the create answered without
+	// waiting for one.
+	if created.BaseSandbox != nil {
+		t.Errorf("base sandbox = %+v, want none reported yet", created.BaseSandbox)
 	}
 
 	// GET by id
@@ -90,7 +93,8 @@ func TestProjectCRUDRoundTrip(t *testing.T) {
 func TestCreateProjectRejectsMissingPath(t *testing.T) {
 	srv := projectServer(t)
 
-	raw, _ := json.Marshal(map[string]any{"name": "Demo", "path": filepath.Join(t.TempDir(), "does-not-exist")})
+	raw, _ := json.Marshal(map[string]any{
+		"name": "Demo", "path": filepath.Join(t.TempDir(), "does-not-exist"), "agent": "claude"})
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(string(raw)))
 	rec := httptest.NewRecorder()
 	srv.handleCreateProject(rec, req)
@@ -132,42 +136,49 @@ func TestStartProjectSessionNotFound(t *testing.T) {
 	}
 }
 
-// The first session started in a project without a worktree is what makes
-// its main sandbox, so it has to say what agent that sandbox is for.
-func TestStartProjectSessionFirstOneNeedsAKnownAgent(t *testing.T) {
+// A session cannot start until the project has the base sandbox its own
+// sandbox is cloned from, so a project whose base sandbox cannot be built
+// fails here rather than starting something that inherited nothing.
+func TestStartProjectSessionNeedsTheBaseSandbox(t *testing.T) {
 	srv := projectServer(t)
-	created, err := srv.mgr.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: t.TempDir()})
+	created, err := srv.mgr.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: t.TempDir(), Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	rec := postProjectSession(t, srv, created.ID, map[string]any{"kind": "shell"})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body)
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("the session was started without an sbx to start it in: %s", rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), "agent") {
-		t.Fatalf("error does not mention the agent: %s", rec.Body)
+	if !strings.Contains(rec.Body.String(), "sbx") {
+		t.Fatalf("the request failed before the sandbox was attempted: %s", rec.Body)
+	}
+	if sb := srv.mgr.BaseSandbox(created.ID); sb != nil {
+		t.Fatalf("nothing should have been registered, got %+v", sb)
 	}
 }
 
-// A non-worktree session reuses the project's existing main sandbox
-// regardless of what agent the request names — and never makes a second one,
-// even though starting the session itself cannot succeed without a real sbx.
-func TestStartProjectSessionReusesExistingMainSandbox(t *testing.T) {
+// A plain session gets a clone sandbox of its own rather than sharing the
+// project's, so the base sandbox is left with nothing running in it and the
+// second session does not have to wait for the first.
+func TestStartProjectSessionClonesRatherThanReusing(t *testing.T) {
 	stateDir := t.TempDir()
+	projDir := t.TempDir()
+
 	bootstrap, err := manager.New(sbx.New(""), stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projDir := t.TempDir()
-	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: projDir})
+	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: projDir, Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// The only way to register a sandbox without an sbx to create it: written
 	// straight into the state file the next manager loads.
-	sandboxes := []manager.Sandbox{{ID: "main1", Name: "main-sb", Agent: "claude", Workspace: projDir, ProjectID: proj.ID}}
+	sandboxes := []manager.Sandbox{
+		{ID: "base1", Name: "base-sb", Agent: "claude", Workspace: projDir, ProjectID: proj.ID, IsBase: true},
+	}
 	data, err := json.Marshal(sandboxes)
 	if err != nil {
 		t.Fatal(err)
@@ -182,10 +193,9 @@ func TestStartProjectSessionReusesExistingMainSandbox(t *testing.T) {
 	}
 	srv := &Server{mgr: mgr, git: git.New("")}
 
-	rec := postProjectSession(t, srv, proj.ID, map[string]any{"kind": "shell", "agent": "codex"})
-	// There is no sbx to actually start the session in, so the request itself
-	// fails — what matters is that it failed trying to use main1 rather than
-	// making a second sandbox for "codex".
+	rec := postProjectSession(t, srv, proj.ID, map[string]any{"kind": "shell"})
+	// There is no sbx to make the clone with, so the request fails — what
+	// matters is that it never tried to run the session in base1.
 	if rec.Code == http.StatusCreated {
 		t.Fatalf("the session was started without an sbx to start it in: %s", rec.Body)
 	}
@@ -194,14 +204,72 @@ func TestStartProjectSessionReusesExistingMainSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Sandboxes) != 1 || view.Sandboxes[0].ID != "main1" {
-		t.Fatalf("got sandboxes %+v, want just the original main1", view.Sandboxes)
+	if len(view.Sandboxes) != 1 || view.Sandboxes[0].ID != "base1" {
+		t.Fatalf("got sandboxes %+v, want just the base one", view.Sandboxes)
+	}
+	if len(view.Sessions) != 0 {
+		t.Fatalf("got sessions %+v in the base sandbox, want none ever", view.Sessions)
+	}
+}
+
+// Nothing offered on a sandbox may be done to the base one, and the refusal
+// is the same wherever it comes from.
+func TestBaseSandboxActionsAreRefused(t *testing.T) {
+	stateDir := t.TempDir()
+	bootstrap, err := manager.New(sbx.New(""), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projDir := t.TempDir()
+	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: projDir, Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal([]manager.Sandbox{
+		{ID: "base1", Name: "base-sb", Agent: "claude", Workspace: projDir, ProjectID: proj.ID, IsBase: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "sandboxes.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := manager.New(sbx.New(filepath.Join(t.TempDir(), "no-such-sbx")), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{mgr: mgr, git: git.New("")}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		call   func(http.ResponseWriter, *http.Request)
+	}{
+		{"start a session", http.MethodPost, "/sessions", srv.handleStartSession},
+		{"stop", http.MethodPost, "/stop", srv.handleStopSandbox},
+		{"delete", http.MethodDelete, "", srv.handleDeleteSandbox},
+		{"branch a worktree off", http.MethodPost, "/worktree", srv.handleStartWorktreeSession},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/api/sandboxes/base1"+tc.path, strings.NewReader("{}"))
+			req.SetPathValue("id", "base1")
+			rec := httptest.NewRecorder()
+			tc.call(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 (%s)", rec.Code, rec.Body)
+			}
+		})
+	}
+
+	if _, err := mgr.GetSandbox("base1"); err != nil {
+		t.Fatalf("the base sandbox should still be here: %v", err)
 	}
 }
 
 func TestStartProjectSessionWorktreeNeedsARepo(t *testing.T) {
 	srv := projectServer(t)
-	proj, err := srv.mgr.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: t.TempDir()})
+	proj, err := srv.mgr.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: t.TempDir(), Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +291,7 @@ func TestStartProjectSessionWorktreeNeedsARepo(t *testing.T) {
 func TestStartProjectSessionWorktreeRollsBackWhenTheSandboxFails(t *testing.T) {
 	dir := committedRepo(t)
 	srv := projectServer(t)
-	proj, err := srv.mgr.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: dir})
+	proj, err := srv.mgr.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: dir, Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +328,7 @@ func TestProjectViewListsSandboxesWithNoSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: projDir})
+	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: projDir, Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +343,7 @@ func TestProjectViewListsSandboxesWithNoSessions(t *testing.T) {
 	sandboxes := []manager.Sandbox{
 		{ID: "wt1", Name: "demo-9f2c", Agent: "claude", Workspace: tree.Path,
 			ProjectID: proj.ID, IsWorktree: true, RepoRoot: tree.RepoRoot},
-		{ID: "main1", Name: "claude-demo", Agent: "claude", Workspace: projDir, ProjectID: proj.ID},
+		{ID: "base1", Name: "claude-demo", Agent: "claude", Workspace: projDir, ProjectID: proj.ID, IsBase: true},
 	}
 	data, err := json.Marshal(sandboxes)
 	if err != nil {
@@ -306,13 +374,16 @@ func TestProjectViewListsSandboxesWithNoSessions(t *testing.T) {
 	if len(got.Sandboxes) != 2 {
 		t.Fatalf("got sandboxes %+v, want both of them", got.Sandboxes)
 	}
-	// The project's own sandbox leads, whatever order the manager's map
-	// happened to yield them in.
-	if got.Sandboxes[0].ID != "main1" || got.Sandboxes[1].ID != "wt1" {
-		t.Fatalf("got order %s, %s; want main1 first", got.Sandboxes[0].ID, got.Sandboxes[1].ID)
+	// The base sandbox leads, whatever order the manager's map happened to
+	// yield them in.
+	if got.Sandboxes[0].ID != "base1" || got.Sandboxes[1].ID != "wt1" {
+		t.Fatalf("got order %s, %s; want base1 first", got.Sandboxes[0].ID, got.Sandboxes[1].ID)
 	}
-	if got.MainSandbox == nil || got.MainSandbox.ID != "main1" {
-		t.Fatalf("main sandbox = %+v, want main1", got.MainSandbox)
+	if got.BaseSandbox == nil || got.BaseSandbox.ID != "base1" {
+		t.Fatalf("base sandbox = %+v, want base1", got.BaseSandbox)
+	}
+	if !got.Sandboxes[0].IsBase {
+		t.Error("the base sandbox is not marked as one, so the UI would offer actions the server refuses")
 	}
 
 	wt := got.Sandboxes[1]
@@ -341,7 +412,7 @@ func TestDeleteProjectCleansUpWorktrees(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: dir})
+	proj, err := bootstrap.CreateProject(manager.CreateProjectRequest{Name: "demo", Path: dir, Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}

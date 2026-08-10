@@ -68,12 +68,12 @@ func defaultName(agent, workspace string) string {
 	return agent + "-" + base
 }
 
-// DefaultWorktreeSandboxName names a worktree's sandbox after the project it
-// belongs to plus a random slug, rather than the branch it was made for: a
-// branch name can be long, nested with slashes, or shared by worktrees made
-// from it more than once, none of which make a good — or unique — sandbox
-// name on their own.
-func DefaultWorktreeSandboxName(projectName string) string {
+// DefaultProjectSandboxName names one of a project's session sandboxes —
+// clone or worktree — after the project plus a random slug, rather than
+// after the branch or the folder: a project has as many of these as it has
+// sessions, and a branch name can be long, nested with slashes, or shared by
+// two of them, none of which makes a good — or unique — sandbox name.
+func DefaultProjectSandboxName(projectName string) string {
 	base := unsafeName.ReplaceAllString(strings.ToLower(projectName), "-")
 	base = strings.Trim(base, "-")
 	if base == "" {

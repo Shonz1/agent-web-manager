@@ -13,20 +13,29 @@ func TestCreateArgs(t *testing.T) {
 	}{
 		{
 			name: "minimal",
-			got:  CreateArgs("box", "claude", "/w", nil, nil),
+			got:  CreateArgs(CreateOptions{Name: "box", Agent: "claude", Workspace: "/w"}),
 			want: []string{"create", "--name", "box", "claude", "/w"},
 		},
 		{
 			name: "extra workspaces follow the primary one",
-			got:  CreateArgs("box", "claude", "/w", []string{"/docs:ro"}, nil),
+			got: CreateArgs(CreateOptions{Name: "box", Agent: "claude", Workspace: "/w",
+				ExtraWorkspaces: []string{"/docs:ro"}}),
 			want: []string{"create", "--name", "box", "claude", "/w", "/docs:ro"},
 		},
 		{
 			// "sbx create" routes to a per-agent subcommand, so every flag
 			// has to be parsed before the agent name is seen.
 			name: "published ports precede the agent",
-			got:  CreateArgs("box", "shell", "/w", nil, []string{"3000:3000", "8080"}),
+			got: CreateArgs(CreateOptions{Name: "box", Agent: "shell", Workspace: "/w",
+				Publish: []string{"3000:3000", "8080"}}),
 			want: []string{"create", "--name", "box", "--publish", "3000:3000", "--publish", "8080", "shell", "/w"},
+		},
+		{
+			// Same reason: the workspace is still named, but sbx clones it
+			// into the sandbox instead of mounting it.
+			name: "clone mode is a flag on the create, before the agent",
+			got:  CreateArgs(CreateOptions{Name: "box", Agent: "claude", Workspace: "/w", Clone: true}),
+			want: []string{"create", "--name", "box", "--clone", "claude", "/w"},
 		},
 	}
 	for _, tt := range tests {

@@ -27,6 +27,12 @@ var (
 	ErrSandboxNotFound = errors.New("sandbox not found")
 	ErrSessionNotFound = errors.New("session not found")
 	ErrExists          = errors.New("a sandbox with that name already exists")
+	// ErrBaseSandbox rejects anything asked of a project's base sandbox. It
+	// is the sandbox every session sandbox is cloned from, so running in it,
+	// stopping it or deleting it would change what the next session inherits
+	// — and there is nothing it does that a session sandbox does not do
+	// better. It goes when its project goes.
+	ErrBaseSandbox = errors.New("this is the project's base sandbox: it is only ever cloned from, so nothing can be run in it and it cannot be stopped or deleted on its own")
 )
 
 // createTimeout covers an "sbx create" that has to pull an agent image, which
@@ -57,6 +63,15 @@ type Manager struct {
 	eventSubs map[int]chan Event
 	nextEvent int
 
+	// Making a project's base sandbox can take an image pull's worth of time,
+	// and both the project create and the first session want it: they are
+	// serialised per project so the loser waits for the winner's sandbox
+	// instead of starting a second one. baseMu guards the map; the mutexes in
+	// it are held across the create itself, which is why one shared lock
+	// would not do — a slow pull for one project would stall every other.
+	baseMu    sync.Mutex
+	baseLocks map[string]*sync.Mutex
+
 	// A session's activity can flip several times a second, and touching a
 	// sandbox's LastActivityAt is cheap, but writing it to disk is not — so
 	// only the in-memory value is updated on every touch, and this throttles
@@ -84,6 +99,7 @@ func New(client *sbx.Client, stateDir string) (*Manager, error) {
 		sessions:  make(map[string]*Session),
 		projects:  make(map[string]*Project),
 		eventSubs: make(map[int]chan Event),
+		baseLocks: make(map[string]*sync.Mutex),
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -104,20 +120,25 @@ type CreateSandboxRequest struct {
 	ExtraWorkspaces []string `json:"extraWorkspaces"`
 	Publish         []string `json:"publish"`
 
-	// ProjectID, IsWorktree, and RepoRoot are set by the project session flow
-	// rather than by a caller creating a sandbox directly; see
-	// EnsureProjectSandbox and the worktree session handler.
+	// ProjectID, IsBase, Clone, IsWorktree, and RepoRoot are set by the
+	// project session flow rather than by a caller creating a sandbox
+	// directly; see EnsureBaseSandbox, CreateSessionSandbox, and the worktree
+	// session handler.
 	ProjectID  string `json:"projectId,omitempty"`
+	IsBase     bool   `json:"isBase,omitempty"`
+	Clone      bool   `json:"clone,omitempty"`
 	IsWorktree bool   `json:"isWorktree,omitempty"`
 	RepoRoot   string `json:"repoRoot,omitempty"`
 
-	// PluginsFrom names the sandbox whose Claude Code plugins the new one
-	// should be given a copy of. Empty takes them from the machine this
-	// manager runs on, which is where a user who installs a plugin normally
-	// installs it. See plugins.go for why a new sandbox has none of its own.
+	// PluginsFrom names the sandbox whose Claude Code configuration — its
+	// plugins, and the model it is set to — the new one should be given a
+	// copy of. Empty takes them from the machine this manager runs on, which
+	// is where a user who installs a plugin or picks a model normally does
+	// it. See plugins.go and model.go for why a new sandbox has neither of
+	// its own.
 	PluginsFrom string `json:"pluginsFrom"`
-	// NoPlugins leaves the new sandbox with whatever plugins its image came
-	// with, which is none.
+	// NoPlugins leaves the new sandbox with whatever its image came with,
+	// which is no plugins and the default model.
 	NoPlugins bool `json:"noPlugins"`
 }
 
@@ -165,7 +186,14 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 	// because the browser gave up waiting for the response.
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
-	if err := m.client.Create(ctx, req.Name, req.Agent, ws, extras, req.Publish); err != nil {
+	if err := m.client.Create(ctx, sbx.CreateOptions{
+		Name:            req.Name,
+		Agent:           req.Agent,
+		Workspace:       ws,
+		ExtraWorkspaces: extras,
+		Publish:         req.Publish,
+		Clone:           req.Clone,
+	}); err != nil {
 		return nil, err
 	}
 
@@ -180,6 +208,8 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 		CreatedAt:       now,
 		LastActivityAt:  now,
 		ProjectID:       req.ProjectID,
+		IsBase:          req.IsBase,
+		Clone:           req.Clone,
 		IsWorktree:      req.IsWorktree,
 		RepoRoot:        req.RepoRoot,
 	}
@@ -200,7 +230,8 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 	// After the sandbox is registered, so that a copy which goes wrong leaves
 	// a sandbox the user can still see and use, rather than one this manager
 	// has forgotten about.
-	if from, ok := m.pluginSource(req); ok {
+	if from, ok := m.configSource(req); ok {
+		m.mirrorModel(sb.Name, from)
 		m.mirrorPlugins(sb.Name, from)
 	}
 	return sb, nil
@@ -294,6 +325,9 @@ func (m *Manager) StopSandbox(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if sb.IsBase {
+		return ErrBaseSandbox
+	}
 	for _, s := range m.sandboxSessions(sb.ID) {
 		s.terminate()
 		m.dropSession(s.ID)
@@ -302,12 +336,23 @@ func (m *Manager) StopSandbox(ctx context.Context, id string) error {
 }
 
 // DeleteSandbox removes the sandbox record and destroys the container. This is
-// irreversible.
+// irreversible. A project's base sandbox is refused: it goes when its project
+// goes, through deleteSandbox below.
 func (m *Manager) DeleteSandbox(ctx context.Context, id string) error {
 	sb, err := m.GetSandbox(id)
 	if err != nil {
 		return err
 	}
+	if sb.IsBase {
+		return ErrBaseSandbox
+	}
+	return m.deleteSandbox(ctx, sb)
+}
+
+// deleteSandbox is DeleteSandbox without the base-sandbox guard, for the one
+// caller entitled to ignore it: DeleteProject, which is removing the project
+// the base sandbox exists for.
+func (m *Manager) deleteSandbox(ctx context.Context, sb *Sandbox) error {
 	for _, s := range m.sandboxSessions(sb.ID) {
 		s.terminate()
 		m.dropSession(s.ID)
@@ -388,6 +433,12 @@ func (m *Manager) StartSession(ctx context.Context, sandboxID string, req StartS
 	sb, err := m.GetSandbox(sandboxID)
 	if err != nil {
 		return nil, err
+	}
+	// The base sandbox is a source to clone, not a place to work: a terminal
+	// in it would change what the next session inherits, and every session
+	// has a sandbox of its own to be that terminal instead.
+	if sb.IsBase {
+		return nil, ErrBaseSandbox
 	}
 	if req.Kind == "" {
 		req.Kind = KindAgent
@@ -495,7 +546,17 @@ func (m *Manager) ensureSandbox(ctx context.Context, sb *Sandbox) error {
 
 	createCtx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
-	return m.client.Create(createCtx, sb.Name, sb.Agent, sb.Workspace, sb.ExtraWorkspaces, sb.Publish)
+	return m.client.Create(createCtx, sbx.CreateOptions{
+		Name:            sb.Name,
+		Agent:           sb.Agent,
+		Workspace:       sb.Workspace,
+		ExtraWorkspaces: sb.ExtraWorkspaces,
+		Publish:         sb.Publish,
+		// A clone sandbox rebuilt is a fresh clone of the workspace as it
+		// stands now: whatever the old container held was only ever inside
+		// it, and it is gone.
+		Clone: sb.Clone,
+	})
 }
 
 // GetSession returns a session by ID.
@@ -785,9 +846,51 @@ func (m *Manager) loadProjects() error {
 		if p.LastActivityAt.IsZero() {
 			p.LastActivityAt = p.CreatedAt
 		}
+		// A project written before the agent belonged to the project rather
+		// than to each of its sandboxes takes the agent its sandboxes are
+		// already built for, so that the base sandbox made for it on the next
+		// start is the same kind of thing they are.
+		if p.Agent == "" {
+			p.Agent = m.projectAgentLocked(p.ID)
+		}
 		m.projects[p.ID] = &p
 	}
 	return nil
+}
+
+// projectAgentLocked guesses a project's agent from the sandboxes it already
+// owns, for a record that predates the field. Sandboxes are loaded before
+// projects are, so this reads the finished map; nothing else is running yet,
+// which is why it takes no lock.
+func (m *Manager) projectAgentLocked(projectID string) string {
+	var best *Sandbox
+	for _, sb := range m.sandboxes {
+		if sb.ProjectID != projectID || !sbx.ValidAgent(sb.Agent) {
+			continue
+		}
+		// The oldest sandbox mounted on the project's own folder is the
+		// closest thing the old model had to a project-wide agent; a worktree
+		// one will do if that is all there is.
+		if best == nil || better(sb, best) {
+			best = sb
+		}
+	}
+	if best != nil {
+		return best.Agent
+	}
+	// A project with no sandbox to learn from, which is what an install that
+	// never started a session in it looks like.
+	return agentClaude
+}
+
+// better reports whether a is a more telling example of a project's agent
+// than b: a sandbox on the project folder over one on a worktree, and the
+// older of two alike.
+func better(a, b *Sandbox) bool {
+	if a.IsWorktree != b.IsWorktree {
+		return !a.IsWorktree
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
 }
 
 // readFirst returns the contents of the first of paths that exists, or a nil

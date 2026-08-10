@@ -68,21 +68,45 @@ None of them is a flag, on purpose — see [Telegram](#telegram).
 
 ### 1. Create a project
 
-**New project**: give it a name and a host folder to work in. **Browse…**
-opens a folder picker that walks the host filesystem (git checkouts are
-tagged), or type the path directly — `~` is expanded. Nothing else happens
-yet: no sandbox is made until the first session starts in it.
+**New project**: give it a name, a host folder to work in, and the agent
+(`claude`, `codex`, `gemini`, `shell`, …) every session in it will run.
+**Browse…** opens a folder picker that walks the host filesystem (git
+checkouts are tagged), or type the path directly — `~` is expanded.
+
+Creating the project starts its **base sandbox** in the background: `sbx
+create <agent> --name <name> <workspace>`, named `<agent>-<dir>` after the
+folder and numbered past anything already holding that name. The first one for
+an agent can take minutes while its image is pulled, which is why the project
+appears straight away and the sandbox catches up.
+
+Nothing ever runs in the base sandbox. It is there to be the thing every
+session's sandbox is cloned from, so what a session inherits — the Claude Code
+plugins, the model it is set to — is a settled sandbox of the project's own
+rather than whichever sandbox happened to be made first. The UI marks it
+`base`, and the server refuses to start a session in it, stop it, or delete
+it; it goes when the project goes. A project that has lost its base sandbox
+gets another at the next start, or at the next session, whichever comes first.
 
 ### 2. Start sessions in it
 
-**+ New session**, inside the project: pick an agent (`claude`, `codex`,
-`gemini`, `shell`, …) and any arguments to pass it after `--`. The first
-plain session in a project makes its main sandbox — `sbx create <agent>
---name <name> <workspace>`, named `<agent>-<dir>` after the workspace and
-numbered past anything already holding that name — and every later plain
-session in the project reuses it, on whichever agent made it. No agent starts
-until then; the first create for an agent can take minutes while its image is
-pulled.
+**+ New session**, inside the project: any arguments to pass the agent after
+`--`, and that is it — the agent was chosen with the project.
+
+Each session gets a sandbox of its own, cloned from the base one and created
+in sbx's **clone mode** (`sbx create --clone …`): its workspace is a standalone
+git clone of the project folder, made inside the container when the sandbox
+starts, rather than the folder itself bind-mounted in. So several sessions can
+work on one project at once without sharing a checkout, and nothing any of them
+does reaches the host until you fetch it:
+
+```bash
+git fetch sandbox-<sandbox-name>   # on the host, while the sandbox is running
+```
+
+That also means work in a clone sandbox lives and dies with it. Deleting one
+takes its checkout with it, commits included, which is what the confirmation
+says before it happens — push anything worth keeping, or start the session on a
+worktree instead.
 
 Once a session is running, its sandbox panel starts more of them:
 
@@ -98,32 +122,35 @@ Neither is limited. Anything a session draws — full TUIs included — renders 
 the terminal. A project's sandboxes and sessions appear nested under it in the
 sidebar; click one to attach.
 
-### A worktree of its own
+### A worktree on the host instead
 
-**New session** and **Start agent** both offer to give the session a git
-worktree: tick the box, name a branch, and the agent starts on a branch and a
-checkout that nothing else is using. It is offered where a session starts
-because that is where the choice has to be made — a sandbox's mounts are
+A clone keeps the session's work inside the container. When you want the
+checkout on this machine — to open it in your own editor, or to keep the
+commits after the sandbox goes — **New session** and **Start agent** both offer
+a git worktree instead: tick the box, name a branch, and the agent starts on a
+branch and a checkout that nothing else is using. It is offered where a session
+starts because that is where the choice has to be made — a sandbox's mounts are
 fixed by `sbx create`, so a worktree cannot be handed to a session that is
 already running.
 
 Ticking it does three things, and reports all three:
 
-1. `git worktree add` against the sandbox's workspace. The worktree goes beside
+1. `git worktree add` against the project's folder. The worktree goes beside
    the repository, in `<repo>-<branch>`, unless you name a directory yourself;
    it has to be one that does not exist yet. A branch that is already there is
    checked out as it stands, and a new one starts from where the workspace is
    now.
-2. A sandbox of its own, on the same agent, mounted on the worktree — plus the
-   repository the worktree came from. That second mount is not optional: a
+2. A sandbox of its own, on the project's agent, mounted on the worktree — plus
+   the repository the worktree came from. That second mount is not optional: a
    worktree's `.git` is a file pointing into the main repository, and without
    the other end of it the agent has no git at all. Published ports are not
    carried over, because two containers cannot bind the same host port.
 3. The session, started in that sandbox. The UI opens it, and the new sandbox
-   appears in the sidebar beside the one it was branched from.
+   appears in the sidebar beside the project's others.
 
-Both sandboxes then stand on their own: two agents, two branches, two diffs to
-read, and neither able to overwrite the other's files. Deleting the worktree's
+Every sandbox then stands on its own: separate agents, separate branches,
+separate diffs to read, and none able to overwrite another's files. Deleting the
+worktree's
 sandbox destroys the container *and* runs `git worktree remove` on the checkout
 under it: the directory was made along with the sandbox and there is nothing
 left to use it for once the sandbox is gone. Anything committed there and never
@@ -444,13 +471,18 @@ Two things are being compared, and the selector picks which:
   On the default branch itself there is no such stretch, and it falls back to
   uncommitted work and says so.
 
-The workspace is bind-mounted from the host, so the files the agent is editing
-inside the sandbox are the ones on the host, and the manager reads them there
-with the `git` on your `PATH` (`-git` points it elsewhere). That means a diff
-is still readable after the sandbox has been stopped, costs nothing while the
-tab is closed, and does not care whether the agent's image has git in it. The
-list re-reads itself every five seconds while you are looking at it, and leaves
-the pane alone when nothing has changed, so reading a long diff is not
+Where that is read from depends on the sandbox. A worktree sandbox's workspace
+is bind-mounted from the host, so the files the agent is editing are the ones on
+the host, and the manager reads them there with the `git` on your `PATH` (`-git`
+points it elsewhere): the diff is still readable after the sandbox has been
+stopped, and does not care whether the agent's image has git in it. A clone
+sandbox's checkout is inside the container and on the host nowhere at all, so
+that one is read in there, with the container's own git (`sbx exec <name> git -C
+<workspace> …`). The commands are the same either way; only where they run
+differs.
+
+The list re-reads itself every five seconds while you are looking at it, and
+leaves the pane alone when nothing has changed, so reading a long diff is not
 interrupted by the agent saving a file.
 
 Nothing here writes. Every command is a read, and `GIT_OPTIONAL_LOCKS=0` keeps
@@ -469,7 +501,11 @@ so rather than reporting an error.
 - **Stop** (sandbox) ends every session in it and stops the container, keeping
   its state.
 - **Delete** (sandbox) destroys the container permanently, along with the
-  worktree checkout under it if it was made for one.
+  worktree checkout under it if it was made for one — or, for a clone sandbox,
+  the clone inside it.
+
+None of the last three is offered on a project's base sandbox: it is only ever
+cloned from, and the server refuses all of them.
 
 Sandboxes are persisted, so restarting the manager keeps them listed. Sessions
 are not: a session is a live process with a PTY behind it, and there is nothing
@@ -525,7 +561,7 @@ reaches it with the tab closed.
 | `POST` | `/api/projects` | Create a project |
 | `GET` | `/api/projects/{id}` | One project |
 | `DELETE` | `/api/projects/{id}` | Delete it, along with every sandbox and session inside it |
-| `POST` | `/api/projects/{id}/sessions` | Start a session in it — its main sandbox, or a fresh one on a worktree |
+| `POST` | `/api/projects/{id}/sessions` | Start a session in it — in a clone of its base sandbox, or on a worktree |
 | `GET` | `/api/sandboxes` | Managed sandboxes, with live status and sessions |
 | `GET` | `/api/sandboxes/{id}` | One sandbox |
 | `POST` | `/api/sandboxes/{id}/stop` | End its sessions and stop it |
@@ -545,20 +581,24 @@ Create a project:
 ```bash
 curl -X POST localhost:7788/api/projects \
   -H 'Content-Type: application/json' \
-  -d '{"name":"proj","path":"/path/to/project"}'
+  -d '{"name":"proj","path":"/path/to/project","agent":"claude"}'
 ```
 
+The answer comes back before the base sandbox does; `baseSandbox` on a later
+read of the project is what says it is there.
+
 Start an agent session in it (`{id}` is the project ID the call above
-returned). This first one makes the project's main sandbox; the response
-carries both it and the session, whose `title` the manager assigned — and,
-once the agent has generated one, later reads of the session carry its own
-`aiTitle` beside it. A live session also carries `activity`, one of `busy`,
-`waiting` or `idle`; a session that is not running carries none:
+returned). It names no agent — the project's is what its sandboxes are built
+for — and gets a clone sandbox of its own; the response carries both that and
+the session, whose `title` the manager assigned. Once the agent has generated
+one, later reads of the session carry its own `aiTitle` beside it. A live
+session also carries `activity`, one of `busy`, `waiting` or `idle`; a session
+that is not running carries none:
 
 ```bash
 curl -X POST localhost:7788/api/projects/{id}/sessions \
   -H 'Content-Type: application/json' \
-  -d '{"kind":"agent","agent":"claude"}'
+  -d '{"kind":"agent"}'
 ```
 
 Repeat for a second agent in the same sandbox — `{sbid}` is the `sandbox.id`
@@ -669,14 +709,17 @@ reason not to expose it on a public interface.
 ```
 main.go                     flags, lifecycle, graceful shutdown
 internal/sbx/               sbx CLI wrapper and argv construction
-internal/git/               reads a workspace's changed files and their diffs, and adds the worktree a session can be given
+internal/git/               reads a workspace's changed files and their diffs — here, or inside the sandbox for a clone — and adds the worktree a session can be given
 internal/manager/           sandbox registry and persistence, session PTY lifecycle, scrollback, what a session is doing, which moments are worth notifying about
 internal/notify/            Telegram bot, its settings and persistence, and the relay
 internal/web/               HTTP API, WebSocket attach, event stream, embedded UI
 internal/web/static/        the UI (embedded into the binary)
 ```
 
-State lives in `<state-dir>/sandboxes.json`, alongside a `telegram.json`
-written by the Settings page and readable only by its owner. An install from before sandboxes
+State lives in `<state-dir>/sandboxes.json` and `<state-dir>/projects.json`,
+alongside a `telegram.json` written by the Settings page and readable only by
+its owner. An install from before sandboxes
 and sessions were separate is migrated from `sessions.json` on first start:
-each of those sessions was really a sandbox, so it comes back as one.
+each of those sessions was really a sandbox, so it comes back as one. A project
+written before the agent belonged to the project rather than to each of its
+sandboxes takes the agent those sandboxes are already built for.

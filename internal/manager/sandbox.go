@@ -32,9 +32,22 @@ type Sandbox struct {
 	// sandbox left over from before every sandbox this manager creates
 	// belonged to one, or made directly by "sbx create" outside this manager.
 	ProjectID string `json:"projectId,omitempty"`
+	// IsBase marks a project's base sandbox: the one made with the project
+	// itself, mounted on its folder, and never used for anything. Nothing is
+	// started in it and it cannot be stopped or deleted on its own — it is
+	// there to be the thing every session sandbox is cloned from, so what a
+	// session inherits is a settled sandbox rather than whichever one
+	// happened to be made first. A project has exactly one; see
+	// EnsureBaseSandbox.
+	IsBase bool `json:"isBase,omitempty"`
+	// Clone marks a sandbox created in sbx's clone mode: its workspace is a
+	// standalone git clone of the host checkout rather than the checkout
+	// itself, so nothing it does reaches the host until someone fetches it.
+	// This is what lets a project run several sessions on one folder at once
+	// without giving each a worktree.
+	Clone bool `json:"clone,omitempty"`
 	// IsWorktree marks a sandbox mounted on a worktree of a project's
-	// repository rather than on the project's folder itself. A project has at
-	// most one sandbox that is not one of these; see EnsureProjectSandbox.
+	// repository rather than on the project's folder itself.
 	IsWorktree bool `json:"isWorktree,omitempty"`
 	// RepoRoot is the main working tree the IsWorktree checkout belongs to, so
 	// its worktree can be removed from git when this sandbox is deleted —
