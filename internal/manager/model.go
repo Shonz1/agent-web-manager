@@ -85,9 +85,15 @@ func readModel(ctx context.Context, h pluginHost) (json.RawMessage, error) {
 
 // readSettings reads one JSON settings file from a host. A file that is not
 // there is an empty set of settings rather than a failure: it is what an
-// installation nobody has configured looks like.
+// installation nobody has configured looks like, and it is what every sandbox
+// starts out as.
+//
+// The absence is tested for rather than read through: "cat" of a missing file
+// fails, and a failed read is how a file that is there but unreadable has to
+// be reported — it is the difference between passing the model on and
+// overwriting something this does not understand.
 func readSettings(ctx context.Context, h pluginHost, path string) (map[string]json.RawMessage, error) {
-	out, err := h.run(ctx, "sh", "-c", fmt.Sprintf("cat %q 2>/dev/null", path))
+	out, err := h.run(ctx, "sh", "-c", fmt.Sprintf("if [ -f %[1]q ]; then cat %[1]q; fi", path))
 	if err != nil {
 		return nil, err
 	}

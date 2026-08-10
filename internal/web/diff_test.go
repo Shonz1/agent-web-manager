@@ -40,6 +40,83 @@ func diffServer(t *testing.T, workspace string) (*Server, string) {
 	return &Server{mgr: mgr, git: git.New("")}, id
 }
 
+// cloneDiffServer returns a server holding one clone sandbox — whose checkout
+// exists only inside its container — that sbx reports with the given status,
+// and that sandbox's id. The stand-in sbx answers "ls" and does nothing else,
+// so a read that went ahead and ran git in there comes back empty rather than
+// with a diff.
+func cloneDiffServer(t *testing.T, status string) (*Server, string) {
+	t.Helper()
+	stateDir := t.TempDir()
+	const id = "clone001"
+	state := []manager.Sandbox{{ID: id, Name: "box", Agent: "claude", Workspace: t.TempDir(), Clone: true}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "sandboxes.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := json.Marshal(map[string]any{"sandboxes": []sbx.Sandbox{
+		{Name: "box", ID: "box", Agent: "claude", Status: status},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "sbx")
+	script := "#!/bin/sh\nif [ \"$1\" = \"ls\" ]; then printf '%s' '" + string(listing) + "'; fi\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	client := sbx.New(bin)
+	mgr, err := manager.New(client, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Server{mgr: mgr, client: client, git: git.New("")}, id
+}
+
+// Reading a clone sandbox's checkout means "sbx exec", which starts the
+// container. The Changes view polls, so a sandbox someone stopped on purpose
+// would be woken by leaving that view open and kept awake while it stayed
+// open. It says what it cannot show instead.
+func TestDiffDoesNotWakeAStoppedCloneSandbox(t *testing.T) {
+	srv, id := cloneDiffServer(t, "stopped")
+
+	rec := diffRequest(t, srv, id, "/diff", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	var resp changesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Repo || !strings.Contains(resp.Message, "stopped") {
+		t.Errorf("response = %+v, want no repo and a message saying the sandbox is stopped", resp)
+	}
+
+	// One file's diff is the same read, and answers rather than reaching in.
+	rec = diffRequest(t, srv, id, "/diff/file", "path=keep.txt")
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+}
+
+// And a running one is read as before: the guard is about the container being
+// down, not about clone sandboxes.
+func TestDiffOfARunningCloneSandboxIsAttempted(t *testing.T) {
+	srv, id := cloneDiffServer(t, "running")
+
+	rec := diffRequest(t, srv, id, "/diff", "")
+	// The stand-in sbx runs nothing, so the read fails — which is the proof
+	// that it was made at all.
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 from the read itself (%s)", rec.Code, rec.Body)
+	}
+}
+
 func diffRequest(t *testing.T, srv *Server, id, path, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/sandboxes/"+id+path+"?"+query, nil)

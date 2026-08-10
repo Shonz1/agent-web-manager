@@ -2,6 +2,9 @@ package manager
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -87,6 +90,42 @@ func TestReadModel(t *testing.T) {
 				t.Errorf("model = %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+// A sandbox nobody has configured has no settings file at all, and that is
+// the state every new one starts in. The real shell command is run here
+// because the thing that made this worth writing down is an exit status, not
+// an answer: "cat" of a file that is not there fails, and a read that fails is
+// a read that stops the model being written anywhere.
+func TestReadSettingsOfAHomeWithNoSettings(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	settings, err := readSettings(context.Background(), localHost{}, settingsPath)
+	if err != nil {
+		t.Fatalf("readSettings of a missing file: %v", err)
+	}
+	if len(settings) != 0 {
+		t.Errorf("settings = %v, want an empty set", settings)
+	}
+
+	// And the file is still read when it is there.
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"model":"opus"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model, err := readModel(context.Background(), localHost{})
+	if err != nil {
+		t.Fatalf("readModel: %v", err)
+	}
+	if string(model) != `"opus"` {
+		t.Errorf("model = %s, want \"opus\"", model)
 	}
 }
 

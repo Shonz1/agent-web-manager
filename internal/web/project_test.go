@@ -212,8 +212,9 @@ func TestStartProjectSessionClonesRatherThanReusing(t *testing.T) {
 	}
 }
 
-// Nothing offered on a sandbox may be done to the base one, and the refusal
-// is the same wherever it comes from.
+// Working in the base sandbox or destroying it is refused wherever the ask
+// comes from. Stopping it is not: it holds no work, and it is the only way
+// anyone has of putting the container down.
 func TestBaseSandboxActionsAreRefused(t *testing.T) {
 	stateDir := t.TempDir()
 	bootstrap, err := manager.New(sbx.New(""), stateDir)
@@ -247,7 +248,6 @@ func TestBaseSandboxActionsAreRefused(t *testing.T) {
 		call   func(http.ResponseWriter, *http.Request)
 	}{
 		{"start a session", http.MethodPost, "/sessions", srv.handleStartSession},
-		{"stop", http.MethodPost, "/stop", srv.handleStopSandbox},
 		{"delete", http.MethodDelete, "", srv.handleDeleteSandbox},
 		{"branch a worktree off", http.MethodPost, "/worktree", srv.handleStartWorktreeSession},
 	} {
@@ -260,6 +260,16 @@ func TestBaseSandboxActionsAreRefused(t *testing.T) {
 				t.Fatalf("status = %d, want 403 (%s)", rec.Code, rec.Body)
 			}
 		})
+	}
+
+	// The sbx binary is not there in this test, so the stop fails — but on the
+	// way to sbx rather than at the door.
+	req := httptest.NewRequest(http.MethodPost, "/api/sandboxes/base1/stop", strings.NewReader("{}"))
+	req.SetPathValue("id", "base1")
+	rec := httptest.NewRecorder()
+	srv.handleStopSandbox(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Errorf("stopping the base sandbox was refused: %s", rec.Body)
 	}
 
 	if _, err := mgr.GetSandbox("base1"); err != nil {

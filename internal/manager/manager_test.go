@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,37 @@ func TestSandboxRoundTrip(t *testing.T) {
 	}
 	if got.Name != "box" || got.Agent != "shell" || got.Workspace != "/w" {
 		t.Errorf("got %+v", got)
+	}
+}
+
+// A sandbox sbx has lost is rebuilt on the way to a session, because a
+// workspace mounted from the host comes back with it. A clone sandbox's
+// workspace was made inside the container and went with it: rebuilding one
+// hands back an empty sandbox under a name someone recognises, with every
+// commit made in it gone and nothing said about it.
+func TestEnsureSandboxWillNotRebuildALostClone(t *testing.T) {
+	m, err := New(sbx.New(fakeSbx(t)), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := &Sandbox{ID: "id1", Name: "gone-box", Agent: "claude", Workspace: "/w", Clone: true}
+	m.sandboxes[clone.ID] = clone
+	m.byName[clone.Name] = clone.ID
+
+	err = m.ensureSandbox(context.Background(), clone)
+	if err == nil {
+		t.Fatal("the clone sandbox was rebuilt; its workspace is not what it was")
+	}
+	if !strings.Contains(err.Error(), clone.Name) {
+		t.Errorf("err = %v, want it to name the sandbox that is gone", err)
+	}
+
+	// The plain kind is still rebuilt: the same folder is mounted back in, so
+	// the session that starts in it is the one that would have started in the
+	// sandbox that is gone.
+	mounted := &Sandbox{ID: "id2", Name: "mounted-box", Agent: "claude", Workspace: "/w"}
+	if err := m.ensureSandbox(context.Background(), mounted); err != nil {
+		t.Errorf("ensureSandbox of a mounted sandbox: %v", err)
 	}
 }
 
