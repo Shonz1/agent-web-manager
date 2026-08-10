@@ -80,6 +80,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
 	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("POST /api/projects/{id}/sessions", s.handleStartProjectSession)
+	// The model the project's next session comes up on, kept in its base
+	// sandbox — see model.go for why it is not part of the project view.
+	mux.HandleFunc("GET /api/projects/{id}/model", s.handleGetProjectModel)
+	mux.HandleFunc("PUT /api/projects/{id}/model", s.handlePutProjectModel)
 
 	// Sandboxes stay reachable directly too: a project's own sandboxes are
 	// listed and managed through these once a session has made one.
@@ -284,6 +288,10 @@ func statusFor(err error) int {
 		errors.Is(err, manager.ErrProjectNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, manager.ErrExists):
+		return http.StatusConflict
+	case errors.Is(err, manager.ErrNoBaseSandbox):
+		// Not wrong, just early: the base sandbox is still being built, and
+		// the same request works once it is there.
 		return http.StatusConflict
 	case errors.Is(err, manager.ErrBaseSandbox):
 		// Not a request that arrived wrong: this one is understood and

@@ -193,6 +193,7 @@ async function refresh() {
   // sandbox, or the session was ended.
   if (state.sel && !selectionExists(state.sel)) clearSelection();
   pruneDrafts();
+  pruneProjectModels();
   renderProjectList();
   renderMain();
 }
@@ -338,6 +339,7 @@ function renderProjectPanel(p) {
   $('proj-meta').textContent = meta;
   $('proj-meta').title = meta;
 
+  renderProjectModel(p);
   renderProjectSandboxes(p);
 
   const list = $('proj-sessions');
@@ -374,6 +376,64 @@ function renderProjectPanel(p) {
     li.append(card);
     list.append(li);
   }
+}
+
+/* The model a project's next session comes up on. It lives in the base
+   sandbox, and reading it means running a command in there — which starts that
+   sandbox if it is stopped. So the row shows what the last read or write said
+   and offers to open it, rather than reading it again every five seconds
+   behind the refresh. */
+
+// Keyed by project id, holding the model as text: '' for a project set to no
+// model at all, which is a different thing from one nobody has read yet.
+const projectModels = new Map();
+
+// The setting is passed through in whatever shape it is stored in, because
+// Claude Code takes more than a plain name there. Anything that is not a name
+// is shown as the JSON it is and left alone — replacing it from here would
+// throw away something this page does not understand.
+function modelText(value) {
+  if (value === undefined || value === null) return '';
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+function modelIsName(value) {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+// Only the projects still on the books can be looked at, so only theirs are
+// worth remembering. Called from the poll that refreshes the lists.
+function pruneProjectModels() {
+  for (const id of projectModels.keys()) {
+    if (!findProject(id)) projectModels.delete(id);
+  }
+}
+
+function renderProjectModel(p) {
+  const state = $('proj-model-state');
+  const btn = $('btn-project-model');
+  const known = projectModels.get(p.id);
+
+  // A Claude Code setting, in a file only Claude Code reads. A project built
+  // for another agent has nothing in it to read one, and offering the choice
+  // there would be offering a setting that does nothing.
+  $('proj-model-row').hidden = p.agent !== 'claude';
+  if (p.agent !== 'claude') return;
+
+  if (!p.baseSandbox) {
+    state.textContent = "Set once this project's base sandbox has finished building.";
+  } else if (known === undefined) {
+    state.textContent = `Kept in ${p.baseSandbox.name}. Opening this reads it, starting that sandbox if it is stopped.`;
+  } else if (known === '') {
+    state.textContent = 'Not set: sessions come up on whatever the sandbox image defaults to.';
+  } else {
+    state.textContent = `${known} — what sessions started from now on come up on.`;
+  }
+
+  btn.disabled = !p.baseSandbox;
+  btn.title = p.baseSandbox
+    ? 'Choose the model every session started after this one runs'
+    : 'The base sandbox this is kept in is still being built';
 }
 
 /* The sandboxes a project's sessions run in. They are an implementation
@@ -1644,6 +1704,109 @@ async function submitSession() {
     box.hidden = false;
   } finally {
     btn.disabled = false;
+  }
+}
+
+/* ---------- model dialog ---------- */
+
+/* Changing the model writes it into the project's base sandbox, which is the
+   one place the change reaches every session started afterwards: nothing runs
+   in there, so what it is set to is what the next clone comes up on. The
+   sandboxes already here keep what they were given — the agents inside them
+   read their settings once, when they started. */
+
+const modelDialog = $('model-dialog');
+
+// Which project the dialog is changing, tracked separately from the selection
+// for the same reason the session dialog tracks its own: the read it does is
+// slow enough for the selection to move under it.
+let modelDialogProjectId = null;
+
+$('btn-project-model').addEventListener('click', () => {
+  const p = selectedProject();
+  if (!p || !p.baseSandbox) return;
+  openModelDialog(p);
+});
+
+$('model-cancel').addEventListener('click', () => modelDialog.close());
+$('model-submit').addEventListener('click', submitModel);
+
+$('model-form').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    submitModel();
+  }
+});
+
+async function openModelDialog(p) {
+  modelDialogProjectId = p.id;
+  modelMessage('');
+  $('model-name').value = '';
+  $('model-name').disabled = true;
+  $('model-note').textContent =
+    `Written into ${p.baseSandbox.name}, this project's base sandbox. Every session started after that is cloned`
+    + ' from it and comes up on this model; the sessions and sandboxes already here keep what they were given.';
+  setModelBusy(true, 'Reading…');
+  modelDialog.showModal();
+
+  let data;
+  try {
+    data = await api('GET', `/api/projects/${p.id}/model`);
+  } catch (err) {
+    // Nothing was read, so there is nothing to sensibly write over: saving
+    // now would replace a setting nobody has seen.
+    setModelBusy(false);
+    $('model-name').disabled = true;
+    $('model-submit').disabled = true;
+    modelMessage(err.message);
+    return;
+  }
+
+  projectModels.set(p.id, modelText(data.model));
+  $('model-name').value = modelText(data.model);
+  setModelBusy(false);
+
+  if (!modelIsName(data.model)) {
+    $('model-name').disabled = true;
+    $('model-submit').disabled = true;
+    modelMessage('This base sandbox holds a model setting that is not a plain name, so it is shown as it is stored'
+      + ' and left alone here. Change it in the sandbox itself.');
+  } else {
+    $('model-name').focus();
+  }
+  renderMain();
+}
+
+// Both ends of this talk to a sandbox that may have to be started first, so
+// the button says something is happening rather than looking ignored.
+function setModelBusy(busy, label) {
+  const btn = $('model-submit');
+  btn.disabled = busy;
+  btn.textContent = busy ? label : 'Save';
+  $('model-name').disabled = busy;
+}
+
+function modelMessage(text) {
+  const box = $('model-error');
+  box.textContent = text || '';
+  box.hidden = !text;
+}
+
+async function submitModel() {
+  const p = findProject(modelDialogProjectId);
+  if (!p) return;
+
+  modelMessage('');
+  setModelBusy(true, 'Saving…');
+  try {
+    const data = await api('PUT', `/api/projects/${p.id}/model`, { model: $('model-name').value.trim() });
+    projectModels.set(p.id, modelText(data.model));
+    modelDialog.close();
+    renderMain();
+  } catch (err) {
+    modelMessage(err.message);
+  } finally {
+    setModelBusy(false);
   }
 }
 
