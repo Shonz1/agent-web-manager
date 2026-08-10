@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/git"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/git"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 // diffTimeout bounds one git invocation. A cold repository on a network mount

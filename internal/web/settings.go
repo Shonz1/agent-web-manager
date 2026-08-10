@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/notify"
+	"github.com/Shonz1/agent-web-manager/internal/notify"
 )
 
 // telegramTimeout covers a call to Telegram made while a browser waits on the

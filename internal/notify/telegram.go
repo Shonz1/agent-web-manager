@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
 )
 
 const requestTimeout = 15 * time.Second

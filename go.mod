@@ -1,4 +1,4 @@
-module github.com/oleksiiipatov/agent-web-manager
+module github.com/Shonz1/agent-web-manager
 
 go 1.26.5
 

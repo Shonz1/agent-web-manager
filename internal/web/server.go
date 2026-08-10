@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oleksiiipatov/agent-web-manager/internal/git"
-	"github.com/oleksiiipatov/agent-web-manager/internal/manager"
-	"github.com/oleksiiipatov/agent-web-manager/internal/notify"
-	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
+	"github.com/Shonz1/agent-web-manager/internal/git"
+	"github.com/Shonz1/agent-web-manager/internal/manager"
+	"github.com/Shonz1/agent-web-manager/internal/notify"
+	"github.com/Shonz1/agent-web-manager/internal/sbx"
 )
 
 // createTimeout matches the manager's own budget for "sbx create", which can
