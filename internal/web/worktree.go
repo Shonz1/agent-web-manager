@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,8 +29,9 @@ type startWorktreeRequest struct {
 	Branch string `json:"branch"`
 	// Path is where the worktree goes. Empty puts it beside the repository.
 	Path string `json:"path"`
-	// Name is what to call the new sandbox. Empty takes the usual default,
-	// "<agent>-<directory>", which for a worktree names the branch with it.
+	// Name is what to call the new sandbox. Empty takes the default from
+	// DefaultWorktreeSandboxName: the project's name plus a random slug,
+	// deliberately not the branch — see that function for why.
 	Name string `json:"name"`
 	// NoPlugins starts the new sandbox without the Claude Code plugins the one
 	// it was branched from has.
@@ -101,8 +103,13 @@ func (s *Server) handleStartWorktreeSession(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
 
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = manager.DefaultWorktreeSandboxName(s.worktreeProjectName(sb))
+	}
+
 	created, err := s.mgr.CreateSandbox(manager.CreateSandboxRequest{
-		Name:      strings.TrimSpace(req.Name),
+		Name:      name,
 		Agent:     sb.Agent,
 		Workspace: tree.Path,
 		// What the source sandbox had, plus the repository the worktree belongs
@@ -175,4 +182,16 @@ func withRepoMount(extras []string, repoRoot string) []string {
 // mountPath is an extra workspace without the ":ro" it may carry.
 func mountPath(entry string) string {
 	return strings.TrimSuffix(strings.TrimSpace(entry), ":ro")
+}
+
+// worktreeProjectName is what to call a worktree sandbox after: the project
+// sb belongs to, or — for a sandbox made outside any project — the directory
+// its workspace sits in, which is the closest thing it has to one.
+func (s *Server) worktreeProjectName(sb *manager.Sandbox) string {
+	if sb.ProjectID != "" {
+		if p, err := s.mgr.GetProject(sb.ProjectID); err == nil {
+			return p.Name
+		}
+	}
+	return filepath.Base(strings.TrimSuffix(sb.Workspace, string(filepath.Separator)))
 }
