@@ -110,6 +110,15 @@ type CreateSandboxRequest struct {
 	ProjectID  string `json:"projectId,omitempty"`
 	IsWorktree bool   `json:"isWorktree,omitempty"`
 	RepoRoot   string `json:"repoRoot,omitempty"`
+
+	// PluginsFrom names the sandbox whose Claude Code plugins the new one
+	// should be given a copy of. Empty takes them from the machine this
+	// manager runs on, which is where a user who installs a plugin normally
+	// installs it. See plugins.go for why a new sandbox has none of its own.
+	PluginsFrom string `json:"pluginsFrom"`
+	// NoPlugins leaves the new sandbox with whatever plugins its image came
+	// with, which is none.
+	NoPlugins bool `json:"noPlugins"`
 }
 
 // CreateSandbox creates a sandbox and registers it. No session is started —
@@ -179,6 +188,13 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 
 	if err := m.saveSandboxes(); err != nil {
 		return nil, err
+	}
+
+	// After the sandbox is registered, so that a copy which goes wrong leaves
+	// a sandbox the user can still see and use, rather than one this manager
+	// has forgotten about.
+	if from, ok := m.pluginSource(req); ok {
+		m.mirrorPlugins(sb.Name, from)
 	}
 	return sb, nil
 }
