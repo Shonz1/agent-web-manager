@@ -179,7 +179,6 @@
         <button id="term-sandbox" class="badge link-badge" title="Show this sandbox"></button>
       </div>
       <div class="topbar-actions">
-        <button id="btn-terminal" title="Open a shell in this session's sandbox">Terminal</button>
         <button id="btn-interrupt" title="Send Ctrl-C">Interrupt</button>
         <button id="btn-restart" title="Run this session again">Restart</button>
         <button id="btn-close-session" class="danger" title="End this session; the sandbox keeps running">End session</button>
@@ -193,9 +192,10 @@
          it or lose a line of its scrollback. -->
     <div class="view-tabs" role="tablist" aria-label="Session view">
       <button type="button" id="tab-terminal" class="view-tab active" role="tab"
-              aria-selected="true" aria-controls="terminal">Terminal</button>
+              aria-selected="true" aria-controls="terminal">Agent</button>
       <button type="button" id="tab-diff" class="view-tab" role="tab"
               aria-selected="false" aria-controls="diff-pane">Changes<span id="diff-count" class="count" hidden></span></button>
+      <button type="button" id="tab-shell" class="view-tab" title="Open a shell in this session's sandbox">Terminal</button>
     </div>
 
     <div id="terminal" class="terminal"></div>
