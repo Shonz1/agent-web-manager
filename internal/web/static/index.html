@@ -211,6 +211,18 @@
       <button type="button" data-key="right" aria-label="Right">→</button>
     </div>
 
+    <!-- Enter at a prompt sends what has been typed, so a message of several
+         lines cannot be written in the terminal at all: the first line leaves
+         before the second exists. This holds the whole thing and delivers it
+         in one piece. -->
+    <div id="composer" class="composer">
+      <textarea id="composer-text" rows="1" autocomplete="off"
+                aria-label="Message for this session"
+                placeholder="Write a message — Enter starts a new line"></textarea>
+      <button type="button" id="composer-send" class="primary"
+              title="Send it, and press Return after it (Ctrl-Enter)">Send</button>
+    </div>
+
     <div id="diff-pane" class="diff-pane" hidden>
       <div class="diff-bar">
         <select id="diff-base" aria-label="What to compare the workspace against">
