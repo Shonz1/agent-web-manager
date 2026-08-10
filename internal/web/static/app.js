@@ -340,6 +340,7 @@ function renderProjectPanel(p) {
   $('proj-meta').title = meta;
 
   renderProjectModel(p);
+  renderProjectPlugins(p);
   renderProjectSandboxes(p);
 
   const list = $('proj-sessions');
@@ -434,6 +435,28 @@ function renderProjectModel(p) {
   btn.title = p.baseSandbox
     ? 'Choose the model every session started after this one runs'
     : 'The base sandbox this is kept in is still being built';
+}
+
+/* Whether a session's sandbox is given a copy of the plugins the base sandbox
+   has. Copying them is what makes a session start with the plugins it would
+   have on this machine; turning it off is for a project that does not want
+   them, or does not want to wait for them while the sandbox is built. */
+function renderProjectPlugins(p) {
+  // A Claude Code notion, like the model above it, and nothing at all in a
+  // project built for another agent.
+  $('proj-plugins-row').hidden = p.agent !== 'claude';
+  if (p.agent !== 'claude') return;
+
+  const on = !p.noPlugins;
+  const btn = $('btn-project-plugins');
+  btn.textContent = on ? 'Turn off' : 'Turn on';
+  btn.classList.toggle('primary', !on);
+  btn.title = on
+    ? 'Stop giving the sandboxes this project makes a copy of the plugins'
+    : 'Give the sandboxes this project makes a copy of the plugins again';
+  $('proj-plugins-state').textContent = on
+    ? "Copied from the base sandbox into every session's own, as it is made."
+    : 'Not copied: sessions start with whatever plugins their image came with, which is none.';
 }
 
 /* The sandboxes a project's sessions run in. They are an implementation
@@ -1207,7 +1230,11 @@ function setSessionView(view) {
     startDiffPoll();
     return;
   }
-  stopDiffPoll();
+  // The list is not worth reading with the pane closed, but the count on the
+  // tab is: it is what says whether there is anything in there to open. Read
+  // once now so it is on the tab straight away, then on the slower cadence.
+  loadDiffCount();
+  startDiffPoll();
   // The terminal was laid out at zero size while it was hidden, so it has to
   // measure itself again before it is worth looking at.
   if (state.refit) state.refit();
@@ -1230,13 +1257,21 @@ $('diff-base').addEventListener('change', (ev) => {
 
 /* An agent edits files while you are reading them, so the list is re-read on
    the same cadence as everything else — but only while it is the thing on
-   screen, and only when the answer differs from what is already drawn. */
+   screen, and only when the answer differs from what is already drawn.
+
+   With the pane closed the same read still happens, for the count on the tab
+   alone and three times slower: nobody is watching a number change, and the
+   list it comes from costs a handful of round trips into the sandbox. */
+const DIFF_POLL_OPEN = 5000;
+const DIFF_POLL_COUNT = 15000;
+
 function startDiffPoll() {
   stopDiffPoll();
   diff.timer = setInterval(() => {
-    if (diff.view !== 'diff' || document.visibilityState !== 'visible') return;
-    loadDiff();
-  }, 5000);
+    if (document.visibilityState !== 'visible') return;
+    if (diff.view === 'diff') loadDiff();
+    else loadDiffCount();
+  }, diff.view === 'diff' ? DIFF_POLL_OPEN : DIFF_POLL_COUNT);
 }
 
 function stopDiffPoll() {
@@ -1254,6 +1289,34 @@ function showDiffError(message) {
   const box = $('diff-error');
   box.textContent = message;
   box.hidden = false;
+}
+
+/* The count on the tab, without the pane behind it. It reads the same list —
+   there is no cheaper question to ask — but draws none of it: rendering into a
+   hidden pane would also open a file in it, which is a second request for
+   something nobody is looking at.
+
+   A read that fails leaves the badge alone rather than blanking it. The number
+   that was there was right a moment ago, and "no changes" is a different claim
+   from "could not tell". */
+async function loadDiffCount() {
+  const b = selectedSandbox();
+  if (!b) return;
+
+  // The same counter the list uses, so whichever read is newest wins and a
+  // switch between the two cancels the one it left.
+  const load = ++diff.list;
+  let data;
+  try {
+    data = await api('GET', `/api/sandboxes/${b.id}/diff?base=${diff.base}`);
+  } catch {
+    return;
+  }
+  // The pane may have been opened while this was in flight, and it does its own
+  // reading — leave the badge to the render that comes with the list.
+  if (load !== diff.list || diff.view === 'diff') return;
+  const changes = data.repo ? data.changes : null;
+  setDiffCount(changes ? (changes.files || []).length : null);
 }
 
 async function loadDiff(force) {
@@ -1523,6 +1586,12 @@ $('btn-delete-project').addEventListener('click', () =>
     await api('DELETE', `/api/projects/${p.id}`);
     clearSelection();
   }, 'Delete this project permanently, along with every sandbox and session inside it? This cannot be undone.'));
+
+/* Nothing here reaches the sandboxes that already exist — they were filled
+   when they were made — so this is a change to what the next one gets, and
+   needs no confirming: it is undone by pressing it again. */
+$('btn-project-plugins').addEventListener('click', () =>
+  withProject((p) => api('PUT', `/api/projects/${p.id}/plugins`, { noPlugins: !p.noPlugins })));
 
 /* ---------- create-project dialog ---------- */
 

@@ -144,8 +144,10 @@ type CreateSandboxRequest struct {
 	// it. See plugins.go and model.go for why a new sandbox has neither of
 	// its own.
 	PluginsFrom string `json:"pluginsFrom"`
-	// NoPlugins leaves the new sandbox with whatever its image came with,
-	// which is no plugins and the default model.
+	// NoPlugins leaves the new sandbox with whatever plugins its image came
+	// with, which is none. The model is copied either way: it is a setting of
+	// its own, chosen deliberately, and a project that wants no plugins has
+	// said nothing about which model its sessions should run.
 	NoPlugins bool `json:"noPlugins"`
 }
 
@@ -239,7 +241,9 @@ func (m *Manager) CreateSandbox(req CreateSandboxRequest) (*Sandbox, error) {
 	// has forgotten about.
 	if from, ok := m.configSource(req); ok {
 		m.mirrorModel(sb.Name, from)
-		m.mirrorPlugins(sb.Name, from)
+		if !req.NoPlugins {
+			m.mirrorPlugins(sb.Name, from)
+		}
 	}
 	return sb, nil
 }

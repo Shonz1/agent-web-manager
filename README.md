@@ -87,7 +87,7 @@ rather than whichever sandbox happened to be made first. The UI marks it
 it; it goes when the project goes. A project that has lost its base sandbox
 gets another at the next start, or at the next session, whichever comes first.
 
-The **Model** row on the project page is the one thing you set in there. It
+The **Model** row on the project page is one of two things you set in there. It
 reads `~/.claude/settings.json` out of the base sandbox and writes it back
 (`GET`/`PUT /api/projects/{id}/model`), so every session cloned from it
 afterwards comes up on that model — a name like `opus`, a full model id, or
@@ -96,6 +96,24 @@ exist keep what they were given: an agent reads that file once, when it
 starts. Both directions run a command inside the base sandbox, which starts it
 if it is stopped, so the value is read when you open the dialog rather than
 gathered with the project list.
+
+The **Plugins** row is the other. Claude Code keeps its plugins in
+`~/.claude/plugins`, which belongs to a container's own filesystem and is not
+carried between sandboxes — so a session sandbox would start with none unless
+they are copied in, and copying them is what this row turns off. It is a
+switch, not a dialog: the answer is the project's own record rather than
+something kept in a sandbox, so it is in the project view already and **Turn
+off** / **Turn on** writes it (`PUT /api/projects/{id}/plugins`). Sandboxes
+that already exist are left alone, the same as with the model — this is about
+the ones the project makes from now on. Turning it back on also fills the base
+sandbox from this machine, in the background, because a base sandbox built
+while it was off has nothing to pass on and the setting would otherwise read as
+on and do nothing.
+
+Turning the plugins off does **not** turn off the model: they are separate
+settings, and a project that wants no plugins has said nothing about which
+model its sessions should run. The row is hidden for a project built for
+another agent, which has no Claude Code in it to install a plugin with.
 
 ### 2. Start sessions in it
 
@@ -465,7 +483,9 @@ says it did and what it wrote to the files are not the same claim, and this is
 the one that can be checked.
 
 The tab counts the changed files, so a glance at it says whether there is
-anything to review without opening it. Picking a file shows its diff, with the
+anything to review without opening it — the count is kept current from the
+moment the session is open, while the terminal has the screen and the pane
+behind it has never been looked at. Picking a file shows its diff, with the
 line numbers held against the left edge as long lines scroll under them.
 Copying out of the diff gives the source: the `+` and `−` are drawn rather than
 written, and the line numbers are not selectable.
@@ -493,7 +513,10 @@ differs.
 
 The list re-reads itself every five seconds while you are looking at it, and
 leaves the pane alone when nothing has changed, so reading a long diff is not
-interrupted by the agent saving a file.
+interrupted by the agent saving a file. With the pane closed the same read runs
+every fifteen: it is the count on the tab that is being kept current, nobody is
+watching a number change, and the list behind it costs a handful of commands in
+the sandbox. Neither runs while the browser tab is in the background.
 
 Nothing here writes. Every command is a read, and `GIT_OPTIONAL_LOCKS=0` keeps
 even the ones that would ordinarily refresh the index from taking its lock —
@@ -505,8 +528,6 @@ so rather than reporting an error.
 
 ### 3. Lifecycle
 
-- **Interrupt** sends Ctrl-C to the session.
-- **Restart** runs an exited session again, in the same sandbox.
 - **End session** kills that terminal and leaves everything else alone.
 - **Stop** (sandbox) ends every session in it and stops the container, keeping
   its state.
@@ -514,8 +535,8 @@ so rather than reporting an error.
   worktree checkout under it if it was made for one — or, for a clone sandbox,
   the clone inside it.
 
-None of the last three is offered on a project's base sandbox: it is only ever
-cloned from, and the server refuses all of them.
+None of these is offered on a project's base sandbox: it is only ever cloned
+from, and the server refuses all of them.
 
 Sandboxes are persisted, so restarting the manager keeps them listed. Sessions
 are not: a session is a live process with a PTY behind it, and there is nothing
@@ -572,6 +593,9 @@ reaches it with the tab closed.
 | `GET` | `/api/projects/{id}` | One project |
 | `DELETE` | `/api/projects/{id}` | Delete it, along with every sandbox and session inside it |
 | `POST` | `/api/projects/{id}/sessions` | Start a session in it — in a clone of its base sandbox, or on a worktree |
+| `GET` | `/api/projects/{id}/model` | The model its next session comes up on, read from its base sandbox |
+| `PUT` | `/api/projects/{id}/model` | Set it; an empty `model` leaves the sandbox on its default |
+| `PUT` | `/api/projects/{id}/plugins` | Whether the sandboxes it makes are given the base sandbox's plugins |
 | `GET` | `/api/sandboxes` | Managed sandboxes, with live status and sessions |
 | `GET` | `/api/sandboxes/{id}` | One sandbox |
 | `POST` | `/api/sandboxes/{id}/stop` | End its sessions and stop it |

@@ -3,9 +3,14 @@ package manager
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/oleksiiipatov/agent-web-manager/internal/sbx"
 )
 
 // gitMarket and repoMarket are the two source shapes Claude Code records.
@@ -232,8 +237,13 @@ func TestConfigSource(t *testing.T) {
 			want: "sandbox claude-app",
 		},
 		{
-			name: "opting out takes them from nowhere",
+			// Opting out of the plugins says nothing about the model, and this
+			// is the source of both — so it still answers. Whether the plugins
+			// are actually copied is CreateSandbox's question, tested in
+			// TestNoPluginsStillCarriesTheModel.
+			name: "opting out of the plugins still leaves a source for the model",
 			req:  CreateSandboxRequest{Agent: "claude", NoPlugins: true},
+			want: "this machine",
 		},
 		{
 			// Another agent has no claude in it to install them with.
@@ -283,5 +293,166 @@ func TestMirrorPluginsSurvivesAnUnreadableSource(t *testing.T) {
 
 	if len(h.calls) != 1 || !strings.Contains(strings.Join(h.calls[0], " "), "plugin list") {
 		t.Errorf("calls = %v, want a single plugin list", h.calls)
+	}
+}
+
+// recordingSbx writes a stand-in for sbx that runs what "exec" is given, with a
+// HOME of the named sandbox's own, and appends every invocation to a log. The
+// separate homes are what let a copy between two sandboxes be told apart from
+// one that never happened, and the log is what says which commands were run to
+// do it.
+func recordingSbx(t *testing.T, root, logPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sbx")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"ls\" ]; then printf '%s' '{\"sandboxes\":[]}'; exit 0; fi\n" +
+		"if [ \"$1\" = \"exec\" ]; then\n" +
+		"  box=$2; shift 2\n" +
+		"  echo \"$box: $*\" >> " + logPath + "\n" +
+		"  HOME=" + root + "/$box; export HOME; mkdir -p \"$HOME\"\n" +
+		"  \"$@\"; exit $?\n" +
+		"fi\n" +
+		"echo \"$*\" >> " + logPath + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// ranPluginCommand reports whether anything in the log was a "claude plugin"
+// call, which is the only way a plugin gets into a sandbox.
+func ranPluginCommand(t *testing.T, logPath string) bool {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Contains(string(data), "claude plugin")
+}
+
+// Turning the plugin copy off must not quietly take the model with it. They are
+// two settings on one page, and before this they shared a single decision — so
+// a project that wanted no plugins silently stopped passing on the model it had
+// been asked to use.
+func TestNoPluginsStillCarriesTheModel(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not available")
+	}
+	root := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+
+	// What the source sandbox is set to, in the file a sandbox keeps it in.
+	source := filepath.Join(root, "base-sb", ".claude")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"model":"opus"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := New(sbx.New(recordingSbx(t, root, logPath)), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.CreateSandbox(CreateSandboxRequest{
+		Name:        "target-sb",
+		Agent:       "claude",
+		Workspace:   t.TempDir(),
+		PluginsFrom: "base-sb",
+		NoPlugins:   true,
+	}); err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+
+	if ranPluginCommand(t, logPath) {
+		t.Error("plugins were copied into a sandbox that asked for none")
+	}
+	got := settingValue(t, filepath.Join(root, "target-sb", ".claude", "settings.json"), "model")
+	if got != `"opus"` {
+		t.Errorf("model = %s, want \"opus\" carried across even with the plugins turned off", got)
+	}
+}
+
+// The setting is the project's, and what it governs is the sandboxes the
+// project makes afterwards.
+func TestProjectPluginChoiceReachesTheSandboxesItMakes(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not available")
+	}
+	root := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+
+	m, err := New(sbx.New(recordingSbx(t, root, logPath)), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := projectWithBase(t, m, "base-sb")
+	if _, err := m.SetProjectPlugins(p.ID, true); err != nil {
+		t.Fatalf("SetProjectPlugins: %v", err)
+	}
+
+	if _, err := m.CreateSessionSandbox(context.Background(), p.ID, true); err != nil {
+		t.Fatalf("CreateSessionSandbox: %v", err)
+	}
+	if ranPluginCommand(t, logPath) {
+		t.Error("a session sandbox was given plugins by a project that had turned the copy off")
+	}
+
+	// And back on again: the next sandbox is filled, the ones already made are
+	// left as they are.
+	if _, err := m.SetProjectPlugins(p.ID, false); err != nil {
+		t.Fatalf("SetProjectPlugins back on: %v", err)
+	}
+	if _, err := m.CreateSessionSandbox(context.Background(), p.ID, true); err != nil {
+		t.Fatalf("second CreateSessionSandbox: %v", err)
+	}
+	if !ranPluginCommand(t, logPath) {
+		t.Error("the copy was turned back on and the next sandbox still got none")
+	}
+}
+
+// The choice outlives the process: it is written with the project rather than
+// held in memory for as long as the manager happens to run.
+func TestSetProjectPluginsPersists(t *testing.T) {
+	stateDir := t.TempDir()
+	m, err := New(sbx.New(fakeSbx(t)), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.CreateProject(CreateProjectRequest{Name: "demo", Path: t.TempDir(), Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.NoPlugins {
+		t.Error("a new project copies plugins: that is what it did before there was a setting")
+	}
+
+	updated, err := m.SetProjectPlugins(p.ID, true)
+	if err != nil {
+		t.Fatalf("SetProjectPlugins: %v", err)
+	}
+	if !updated.NoPlugins {
+		t.Error("the project still says it copies plugins")
+	}
+
+	reloaded, err := New(sbx.New(fakeSbx(t)), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := reloaded.GetProject(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !back.NoPlugins {
+		t.Error("the choice did not survive a restart")
+	}
+
+	if _, err := m.SetProjectPlugins("nope", true); !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("unknown project: %v, want ErrProjectNotFound", err)
 	}
 }
